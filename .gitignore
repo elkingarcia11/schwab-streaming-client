@@ -1,0 +1,8 @@
+.env
+service-account-credentials.json
+venv/
+schwab_refresh_token.txt
+equity_symbols.txt
+option_symbols.txt
+data/
+__pycache__/

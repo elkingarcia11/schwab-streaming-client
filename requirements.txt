@@ -1,0 +1,13 @@
+# Core dependencies for Schwab Streaming Client
+httpx
+websocket-client
+pandas
+pytz
+
+# Authentication module dependencies
+requests
+python-dotenv
+google-cloud-storage
+
+# Testing dependencies
+pytest
