@@ -34,6 +34,14 @@ options_symbol_finder_module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(options_symbol_finder_module)
 OptionsSymbolFinder = options_symbol_finder_module.OptionsSymbolFinder
 
+# Import market-data-aggregator functions
+sys.path.append(os.path.join(os.path.dirname(__file__), 'market-data-aggregator'))
+from main import process_streaming_tick
+
+# Import indicator-calculator module
+sys.path.append(os.path.join(os.path.dirname(__file__), 'indicator-calculator'))
+from indicator_calculator import IndicatorCalculator
+
 class SchwabStreamingClient:
     """Streaming client for Schwab API - handles both option data and chart data"""
     
@@ -67,7 +75,7 @@ class SchwabStreamingClient:
                 equity_symbols = ['SPY', 'QQQ']  # Common equity symbols
             self.equity_symbols = equity_symbols
             self.equity_symbols_for_options = equity_symbols  # Use same symbols for options
-            self.dte_mapping = {symbol: 2 for symbol in equity_symbols}  # Default 2 DTE
+            self.dte_mapping = {symbol: 0 for symbol in equity_symbols}  # Default 2 DTE
         
         if option_symbols is None:
             option_symbols = []  # Will be populated based on equity symbols
@@ -85,6 +93,10 @@ class SchwabStreamingClient:
         self.option_recording_data = {}  # Store option data for CSV recording
         self.chart_recording_data = {}  # Store chart data for CSV recording
         
+        # 5-minute aggregated data structures
+        self.chart_1m_data = {}  # Store 1-minute chart data for aggregation
+        self.chart_5m_data = {}  # Store completed 5-minute aggregated bars
+        
         # Track previous values for each option symbol to handle partial updates
         self.previous_option_values = {}
         
@@ -93,6 +105,10 @@ class SchwabStreamingClient:
         
         # Track symbol order for CHART_EQUITY data correlation
         self.chart_equity_symbol_order = []
+        
+        # Initialize indicator calculator
+        self.indicator_calculator = IndicatorCalculator()
+        self.indicator_periods = self.load_indicator_periods()
         
         # WebSocket connection
         self.ws: Optional[websocket.WebSocketApp] = None
@@ -207,6 +223,126 @@ class SchwabStreamingClient:
         except Exception as e:
             print(f"❌ Error loading equity symbols from GCS: {e}")
             return []
+    
+    def load_indicator_periods(self) -> Dict:
+        """Load indicator periods configuration from indicator_periods.json file"""
+        try:
+            config_file = 'indicator_periods.json'
+            if os.path.exists(config_file):
+                with open(config_file, 'r') as f:
+                    indicator_periods = json.load(f)
+                if self.debug:
+                    print(f"📊 Loaded indicator periods configuration for {len(indicator_periods)} symbols")
+                return indicator_periods
+            else:
+                if self.debug:
+                    print(f"⚠️ Indicator periods file {config_file} not found, skipping indicator calculations")
+                return {}
+        except Exception as e:
+            print(f"❌ Error loading indicator periods: {e}")
+            return {}
+    
+    def calculate_1m_indicators(self, symbol: str, chart_data: dict) -> dict:
+        """Calculate technical indicators for 1-minute streaming data"""
+        try:
+            # Check if we have indicator periods for this symbol and timeframe
+            if symbol not in self.indicator_periods or '1m' not in self.indicator_periods[symbol]:
+                return chart_data  # Return unchanged if no configuration
+            
+            indicator_config = self.indicator_periods[symbol]['1m']
+            
+            # Get existing 1-minute data for this symbol
+            if symbol not in self.chart_1m_data:
+                self.chart_1m_data[symbol] = pd.DataFrame()
+            
+            existing_data = self.chart_1m_data[symbol]
+            
+            # Convert chart_data to pandas Series format expected by indicator calculator
+            new_row = pd.Series({
+                'timestamp': chart_data['timestamp (ms)'],
+                'open': chart_data['open'],
+                'high': chart_data['high'],
+                'low': chart_data['low'],
+                'close': chart_data['close'],
+                'volume': chart_data['volume']
+            })
+            
+            # Calculate indicators if we have sufficient data
+            if len(existing_data) > 0:
+                enhanced_row = self.indicator_calculator.calculate_latest_tick_indicators(
+                    existing_data=existing_data,
+                    new_row=new_row,
+                    indicator_periods=indicator_config
+                )
+                
+                # Add indicator values to chart_data
+                for col in enhanced_row.index:
+                    if col not in ['timestamp', 'open', 'high', 'low', 'close', 'volume']:
+                        chart_data[col] = enhanced_row[col]
+                
+                if self.debug:
+                    indicator_values = {k: v for k, v in chart_data.items() if k not in ['timestamp (ms)', 'symbol', 'sequence', 'chart_day']}
+                    print(f"📊 1m indicators for {symbol}: {indicator_values}")
+            
+            return chart_data
+            
+        except Exception as e:
+            if self.debug:
+                print(f"❌ Error calculating 1m indicators for {symbol}: {e}")
+            return chart_data
+    
+    def calculate_5m_indicators(self, symbol: str, aggregated_bar: dict) -> dict:
+        """Calculate technical indicators for 5-minute aggregated data"""
+        try:
+            # Check if we have indicator periods for this symbol and timeframe
+            if symbol not in self.indicator_periods or '5m' not in self.indicator_periods[symbol]:
+                return aggregated_bar  # Return unchanged if no configuration
+            
+            indicator_config = self.indicator_periods[symbol]['5m']
+            
+            # Get existing 5-minute data for this symbol
+            if symbol not in self.chart_5m_data:
+                self.chart_5m_data[symbol] = []
+            
+            # Convert existing 5m data to DataFrame
+            if len(self.chart_5m_data[symbol]) > 0:
+                existing_data = pd.DataFrame(self.chart_5m_data[symbol])
+            else:
+                existing_data = pd.DataFrame()
+            
+            # Convert aggregated_bar to pandas Series format
+            new_row = pd.Series({
+                'timestamp': aggregated_bar['timestamp'],
+                'open': aggregated_bar['open'],
+                'high': aggregated_bar['high'],
+                'low': aggregated_bar['low'],
+                'close': aggregated_bar['close'],
+                'volume': aggregated_bar['volume']
+            })
+            
+            # Calculate indicators if we have sufficient data
+            if len(existing_data) > 0:
+                enhanced_row = self.indicator_calculator.calculate_latest_tick_indicators(
+                    existing_data=existing_data,
+                    new_row=new_row,
+                    indicator_periods=indicator_config
+                )
+                
+                # Add indicator values to aggregated_bar
+                for col in enhanced_row.index:
+                    if col not in ['timestamp', 'open', 'high', 'low', 'close', 'volume']:
+                        aggregated_bar[col] = enhanced_row[col]
+                
+                if self.debug:
+                    indicator_values = {k: v for k, v in aggregated_bar.items() if k not in ['timestamp', 'datetime', 'open', 'high', 'low', 'close', 'volume']}
+                    print(f"📊 5m indicators for {symbol}: {indicator_values}")
+            
+            return aggregated_bar
+            
+        except Exception as e:
+            if self.debug:
+                print(f"❌ Error calculating 5m indicators for {symbol}: {e}")
+            return aggregated_bar
     
     def wait_for_market_open(self):
         """
@@ -614,7 +750,9 @@ class SchwabStreamingClient:
                         if service == 'LEVELONE_OPTIONS':
                             self.resubscribe_option_data()
                         elif service == 'CHART_EQUITY':
-                            self.resubscribe_chart_equity_data()
+                            # Equity streaming disabled for now
+                            # self.resubscribe_chart_equity_data()
+                            pass
                     elif content.get('code') == 0:  # Success
                         print(f"✅ {service} subscription successful")
                     elif content.get('code') == 3:  # Login denied
@@ -717,18 +855,24 @@ class SchwabStreamingClient:
                                         print(f"⚠️ Warning: Empty symbol in chart data: {content_item}")
                                     continue  # Skip this data if symbol is empty
                                 
+                                # Calculate 1-minute indicators for streaming data
+                                chart_data_with_indicators = self.calculate_1m_indicators(symbol, chart_data)
+                                
                                 # Always update streaming DataFrame (real-time updates)
                                 if symbol not in self.chart_option_data:
                                     self.chart_option_data[symbol] = []
-                                self.chart_option_data[symbol].append(chart_data)
+                                self.chart_option_data[symbol].append(chart_data_with_indicators)
                                 
                                 # Always record chart data (chart data typically represents discrete events)
                                 if symbol not in self.chart_recording_data:
                                     self.chart_recording_data[symbol] = []
-                                self.chart_recording_data[symbol].append(chart_data)
+                                self.chart_recording_data[symbol].append(chart_data_with_indicators)
                                 
-                                # Save to CSV file
-                                self.save_chart_data_to_csv(symbol, chart_data)
+                                # Save to CSV file (1-minute data with indicators)
+                                self.save_chart_data_to_csv(symbol, chart_data_with_indicators)
+                                
+                                # 5-minute aggregation processing (use original chart_data without indicators)
+                                self.process_5minute_aggregation(symbol, chart_data)
                                 
                                 if self.debug:
                                     print(f"📈 Chart equity data for {symbol}: {chart_data}")
@@ -875,8 +1019,9 @@ class SchwabStreamingClient:
                 if self.option_symbols:
                     self.subscribe_option_data(self.option_symbols)
                 
-                if self.equity_symbols:
-                    self.subscribe_chart_equity_data(self.equity_symbols)
+                # Equity streaming disabled for now
+                # if self.equity_symbols:
+                #     self.subscribe_chart_equity_data(self.equity_symbols)
             else:
                 print(f"❌ Login failed (code {code}): {msg}")
                 # Close connection on login failure
@@ -987,6 +1132,58 @@ class SchwabStreamingClient:
                 
         except Exception as e:
             print(f"❌ Error saving chart data for {symbol}: {e}")
+
+    def save_5minute_chart_data_to_csv(self, symbol: str, data: dict):
+        """
+        Save a new row of 5-minute aggregated chart data to CSV file.
+        
+        Args:
+            symbol (str): Equity symbol name
+            data (dict): 5-minute aggregated data row to save
+        """
+        try:
+            # Create 5m directory structure
+            os.makedirs('data/equity/5m', exist_ok=True)
+            
+            # Clean the symbol for filename (remove spaces and special characters)
+            clean_symbol = symbol.replace(' ', '').replace('/', '_').replace('\\', '_')
+            
+            # Define CSV file path for 5-minute data
+            csv_file = f'data/equity/5m/{clean_symbol}.csv'
+            
+            # Convert timestamp to readable datetime
+            timestamp_ms = data['timestamp']
+            current_time = datetime.fromtimestamp(timestamp_ms / 1000, self.et_tz)
+            datetime_str = current_time.strftime('%Y-%m-%d %H:%M:%S EDT')
+            
+            # Prepare data for CSV with timestamp as first column
+            csv_data = {
+                'timestamp (ms)': timestamp_ms,
+                'datetime': datetime_str,
+                'symbol': symbol,
+                'open': data['open'],
+                'high': data['high'],
+                'low': data['low'],
+                'close': data['close'],
+                'volume': data['volume']
+            }
+            
+            # Convert data to DataFrame
+            df_new = pd.DataFrame([csv_data])
+            
+            # Check if file exists
+            if os.path.exists(csv_file):
+                # Append to existing file
+                df_new.to_csv(csv_file, mode='a', header=False, index=False)
+            else:
+                # Create new file with headers
+                df_new.to_csv(csv_file, index=False)
+            
+            if self.debug:
+                print(f"💾 Saved 5-minute aggregated data for {symbol} to {csv_file}")
+                
+        except Exception as e:
+            print(f"❌ Error saving 5-minute chart data for {symbol}: {e}")
 
     def save_data_to_csv(self):
         """Save collected recording data to CSV files (only data where volume changed)"""
@@ -1129,6 +1326,10 @@ class SchwabStreamingClient:
             'recording_data': {
                 'option_symbols': {},
                 'chart_equity_symbols': {}
+            },
+            'aggregated_data': {
+                'chart_1m_symbols': {},
+                'chart_5m_symbols': {}
             }
         }
         
@@ -1146,7 +1347,80 @@ class SchwabStreamingClient:
         for symbol, data_list in self.chart_recording_data.items():
             summary['recording_data']['chart_equity_symbols'][symbol] = len(data_list)
         
+        # Aggregated data counts
+        for symbol, data_df in self.chart_1m_data.items():
+            summary['aggregated_data']['chart_1m_symbols'][symbol] = len(data_df)
+            
+        for symbol, data_list in self.chart_5m_data.items():
+            summary['aggregated_data']['chart_5m_symbols'][symbol] = len(data_list)
+        
         return summary
+
+    def process_5minute_aggregation(self, symbol: str, data: dict):
+        """
+        Process 1-minute chart data to create 5-minute aggregated bars using market-data-aggregator.
+        
+        Args:
+            symbol (str): The equity symbol
+            data (dict): The 1-minute chart data
+        """
+        try:
+            # Convert chart data to the format expected by process_streaming_tick
+            # Add datetime field for compatibility
+            timestamp_ms = data['timestamp (ms)']
+            current_time = datetime.fromtimestamp(timestamp_ms / 1000, self.et_tz)
+            datetime_str = current_time.strftime('%Y-%m-%d %H:%M:%S EDT')
+            
+            new_row = {
+                'timestamp': timestamp_ms,
+                'datetime': datetime_str,
+                'open': data['open'],
+                'high': data['high'], 
+                'low': data['low'],
+                'close': data['close'],
+                'volume': data['volume']
+            }
+            
+            # Initialize symbol data if not exists
+            if symbol not in self.chart_1m_data:
+                self.chart_1m_data[symbol] = pd.DataFrame()
+            
+            # Process streaming tick for 5-minute aggregation (1m to 5m)
+            result = process_streaming_tick(
+                existing_data=self.chart_1m_data[symbol],
+                new_row=new_row,
+                original_timeframe=1,  # 1-minute source data
+                new_timeframe=5        # 5-minute target
+            )
+            
+            # Update the 1-minute data storage
+            self.chart_1m_data[symbol] = result['window_data']
+            
+            # If 5-minute bar is ready, save it
+            if result['ready']:
+                aggregated_bar = result['aggregated_bar']
+                
+                # Calculate 5-minute indicators for aggregated data
+                aggregated_bar_with_indicators = self.calculate_5m_indicators(symbol, aggregated_bar)
+                
+                # Initialize 5-minute data storage for symbol
+                if symbol not in self.chart_5m_data:
+                    self.chart_5m_data[symbol] = []
+                
+                # Add the completed 5-minute bar (with indicators)
+                self.chart_5m_data[symbol].append(aggregated_bar_with_indicators)
+                
+                # Save 5-minute bar to CSV (with indicators)
+                self.save_5minute_chart_data_to_csv(symbol, aggregated_bar_with_indicators)
+                
+                if self.debug:
+                    print(f"📊 5-minute bar completed for {symbol}: OHLCV({aggregated_bar_with_indicators['open']:.2f}, {aggregated_bar_with_indicators['high']:.2f}, {aggregated_bar_with_indicators['low']:.2f}, {aggregated_bar_with_indicators['close']:.2f}, {aggregated_bar_with_indicators['volume']})")
+            
+            if self.debug:
+                print(f"🔄 5m aggregation for {symbol}: {result['bars_available']}/{result['bars_needed']} bars (ready: {result['ready']})")
+                
+        except Exception as e:
+            print(f"❌ Error in 5-minute aggregation for {symbol}: {e}")
 
 
 if __name__ == "__main__":

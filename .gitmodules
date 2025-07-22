@@ -1,3 +1,9 @@
 [submodule "options-symbol-finder"]
 	path = options-symbol-finder
 	url = https://github.com/elkingarcia11/options-symbol-finder.git
+[submodule "market-data-aggregator"]
+	path = market-data-aggregator
+	url = https://github.com/elkingarcia11/market-data-aggregator.git
+[submodule "indicator-calculator"]
+	path = indicator-calculator
+	url = https://github.com/elkingarcia11/indicator-calculator.git

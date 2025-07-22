@@ -1,0 +1,42 @@
+{
+    "QQQ":  {
+        "1m": {
+            "ema": 12,
+            "vwma": 11,
+            "roc": 13,
+            "roc_of_roc": 11,
+            "macd_fast": 22,
+            "macd_slow": 35,
+            "macd_signal": 28
+        },
+        "5m": {
+            "ema": 6,
+            "vwma": 11,
+            "roc": 19,
+            "roc_of_roc": 16,
+            "macd_fast": 22,
+            "macd_slow": 36,
+            "macd_signal": 30
+        }
+    },
+    "SPY": {
+        "1m": {
+            "ema": 12,
+            "vwma": 11,
+            "roc": 14,
+            "roc_of_roc": 12,
+            "macd_fast": 35,
+            "macd_slow": 41,
+            "macd_signal": 39
+        },
+        "5m": {
+            "ema": 16,
+            "vwma": 13,
+            "roc": 3, 
+            "roc_of_roc": 3,
+            "macd_fast": 9,
+            "macd_slow": 12,
+            "macd_signal": 12
+        }
+    }
+}

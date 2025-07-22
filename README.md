@@ -1,33 +1,98 @@
-# Schwab Streaming Client
+# Schwab Streaming Client with Technical Indicators
 
-A Python client for streaming data from Charles Schwab's WebSocket API. This client is designed to collect option symbol data and chart option data for regular equity symbols.
+A comprehensive Python client for streaming market data from Charles Schwab's WebSocket API with integrated technical analysis capabilities. This client streams option and equity data while calculating real-time technical indicators.
 
 ## 🎯 **Use Cases**
 
-- **Option Symbol Data Streaming**: Real-time data for specific option contracts
-- **Chart Option Data**: OHLCV data for options related to equity symbols
-- **Data Collection**: Simple, focused data collection without complex processing
+- **Option Symbol Data Streaming**: Real-time data for specific option contracts with volume-based recording
+- **Equity Chart Data Streaming**: 1-minute OHLCV data for equity symbols
+- **Technical Analysis**: Real-time calculation of indicators (RSI, MACD, EMA, Bollinger Bands, etc.)
+- **Multi-Timeframe Analysis**: 1-minute streaming data aggregated to 5-minute bars with indicators
+- **Data Collection & Analytics**: Advanced data storage with calculated technical indicators
 
 ## ✨ **Features**
 
-- 🔐 **OAuth 2.0 Authentication**: Uses the Charles Schwab authentication module
-- 📊 **Option Data Streaming**: Real-time option contract data (bid, ask, volume, Greeks, etc.)
-- 📈 **Chart Option Data**: OHLCV data for options related to equity symbols
-- 🔍 **Automatic Option Symbol Generation**: Automatically finds and generates option symbols for streaming
-- ☁️ **GCS Symbol Management**: Load symbols and DTE from Google Cloud Storage
-- 💾 **Data Persistence**: Save collected data to CSV files
-- ⏰ **Market Hours**: Respects market hours (9:30 AM - 4:00 PM ET)
-- 🐛 **Debug Mode**: Optional detailed logging for development
-- 📋 **Data Summary**: Get counts and summaries of collected data
+### 🔐 **Authentication & Connectivity**
+
+- OAuth 2.0 Authentication via Charles Schwab authentication module
+- WebSocket connection management with automatic reconnection
+- Market hours awareness (9:30 AM - 4:00 PM ET)
+
+### 📊 **Data Streaming**
+
+- **Option Data**: Real-time streaming of 56+ option fields (bid, ask, volume, Greeks, etc.)
+- **Equity Chart Data**: 1-minute OHLCV streaming for equity symbols
+- **Dual DataFrame System**: Separate streaming (all updates) and recording (filtered) data
+- **Volume-Based Recording**: Options data only recorded when total volume changes
+
+### 📈 **Technical Analysis Integration**
+
+- **Real-time Indicators**: Calculate technical indicators on streaming 1-minute data
+- **5-Minute Aggregation**: Automatic conversion from 1m to 5m bars with indicators
+- **Symbol-Specific Configuration**: Customizable indicator periods via `indicator_periods.json`
+- **Comprehensive Indicator Suite**:
+  - **Momentum**: RSI, Stochastic RSI, ROC, ROC of ROC
+  - **Trend**: MACD (line, signal, histogram), EMA, SMA, VWMA
+  - **Volatility**: Bollinger Bands, ATR, Volatility, Price Change
+
+### 🔍 **Symbol Management**
+
+- **Automatic Option Symbol Generation**: Dynamic option symbol creation with DTE configuration
+- **GCS Integration**: Load symbols and DTE mappings from Google Cloud Storage
+- **Configurable Expiration**: Customizable Days To Expiration (DTE) per symbol
+
+### 💾 **Enhanced Data Storage**
+
+- **CSV Output with Indicators**: All data includes calculated technical indicators
+- **Structured Directories**:
+  - `data/options/{symbol}.csv` - Option data with timestamps and volume deltas
+  - `data/equity/{symbol}.csv` - 1-minute equity data with indicators
+  - `data/equity/5m/{symbol}.csv` - 5-minute aggregated bars with indicators
+- **Timestamps**: All records include precise timestamp information
+
+### 🎛️ **Configuration & Control**
+
+- **Indicator Periods Configuration**: `indicator_periods.json` for symbol/timeframe-specific settings
+- **Debug Mode**: Comprehensive logging for development and troubleshooting
+- **Data Summaries**: Real-time statistics on streaming, recording, and aggregated data
+
+## 🏗️ **Architecture**
+
+### **Module Integration**
+
+```
+schwab-streaming-client/
+├── indicator-calculator/           # Technical indicators module
+│   ├── indicator_calculator.py     # RSI, MACD, Bollinger Bands, etc.
+│   └── requirements.txt
+├── market-data-aggregator/         # Timeframe conversion
+│   ├── main.py                     # 1m → 5m aggregation
+│   └── requirements.txt
+├── options-symbol-finder/          # Option symbol generation
+│   ├── options-symbol-finder.py    # Symbol finding logic
+│   └── charles-schwab-authentication-module/
+├── schwab-streaming-client.py      # Main streaming application
+├── indicator_periods.json          # Indicator configuration
+└── data/                          # Output directory structure
+```
+
+### **Data Flow**
+
+1. **WebSocket Connection**: Authenticate and connect to Schwab API
+2. **Symbol Generation**: Create option symbols based on equity symbols + DTE
+3. **Streaming**: Receive real-time option and equity data
+4. **Indicator Calculation**: Calculate technical indicators per configuration
+5. **Data Storage**: Save enhanced data with indicators to CSV files
+6. **Aggregation**: Convert 1m equity data to 5m bars with indicators
 
 ## 🚀 **Quick Start**
 
 ### Prerequisites
 
-- Python 3.6+
+- Python 3.8+
 - Charles Schwab Developer Account
 - Schwab API credentials
-- Required Python packages (see requirements.txt)
+- Git (for submodule management)
 
 ### Installation
 
@@ -50,247 +115,236 @@ A Python client for streaming data from Charles Schwab's WebSocket API. This cli
    ```env
    SCHWAB_APP_KEY=your_app_key_here
    SCHWAB_APP_SECRET=your_app_secret_here
-   GCS_BUCKET_NAME=your_gcs_bucket_name (optional)
-   GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account-key.json (optional)
+   GCS_BUCKET_NAME=your_gcs_bucket_name
+   GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account-key.json
    ```
 
-4. **Run the client:**
+4. **Configure indicators:**
+   Create or modify `indicator_periods.json`:
+
+   ```json
+   {
+     "SPY": {
+       "1m": {
+         "ema": 12,
+         "macd_fast": 12,
+         "macd_slow": 26,
+         "macd_signal": 9,
+         "rsi": 14
+       },
+       "5m": {
+         "ema": 20,
+         "macd_fast": 12,
+         "macd_slow": 26,
+         "macd_signal": 9
+       }
+     }
+   }
+   ```
+
+5. **Run the client:**
    ```bash
    python schwab-streaming-client.py
    ```
 
-## 📊 **Data Types**
+## ⚙️ **Configuration**
 
-### Option Symbol Data
+### **Indicator Periods Configuration**
 
-Streams real-time data for specific option contracts:
+The `indicator_periods.json` file defines which indicators to calculate for each symbol and timeframe:
 
-```python
-option_data = {
-    'symbol': 'SPY240315C00500000',
-    'timestamp': 1703123456789,
-    'bid': 2.50,
-    'ask': 2.55,
-    'last': 2.52,
-    'volume': 1500,
-    'open_interest': 50000,
-    'implied_volatility': 0.25,
-    'delta': 0.65,
-    'gamma': 0.02,
-    'theta': -0.15,
-    'vega': 0.08
+```json
+{
+  "QQQ": {
+    "1m": {
+      "ema": 12,
+      "vwma": 11,
+      "roc": 13,
+      "roc_of_roc": 11,
+      "macd_fast": 22,
+      "macd_slow": 35,
+      "macd_signal": 28
+    },
+    "5m": {
+      "ema": 6,
+      "vwma": 11,
+      "roc": 19,
+      "roc_of_roc": 16,
+      "macd_fast": 22,
+      "macd_slow": 36,
+      "macd_signal": 30
+    }
+  }
 }
 ```
 
-### Chart Option Data
+### **Available Indicators**
 
-OHLCV data for options related to equity symbols:
+| Indicator       | Key                                     | Description                               |
+| --------------- | --------------------------------------- | ----------------------------------------- |
+| RSI             | `rsi`                                   | Relative Strength Index                   |
+| EMA             | `ema`                                   | Exponential Moving Average                |
+| SMA             | `sma`                                   | Simple Moving Average                     |
+| VWMA            | `vwma`                                  | Volume Weighted Moving Average            |
+| MACD            | `macd_fast`, `macd_slow`, `macd_signal` | Moving Average Convergence Divergence     |
+| Bollinger Bands | `bollinger_bands`                       | Upper/lower bands with standard deviation |
+| ROC             | `roc`                                   | Rate of Change                            |
+| ROC of ROC      | `roc_of_roc`                            | Second derivative of price change         |
+| Stochastic RSI  | `stoch_rsi_k`, `stoch_rsi_d`            | Stochastic oscillator applied to RSI      |
+| ATR             | `atr`                                   | Average True Range                        |
+| Volatility      | `volatility`                            | Rolling standard deviation                |
+| Price Change    | `price_change`                          | Percentage change                         |
 
-```python
-chart_option_data = {
-    'symbol': 'SPY',
-    'timestamp': 1703123456789,
-    'open': 450.25,
-    'high': 451.50,
-    'low': 449.75,
-    'close': 450.80,
-    'volume': 2500,
-    'sequence': 12345
-}
-```
-
-## 🔧 **Configuration**
-
-### Client Initialization
+### **Client Initialization**
 
 ```python
-from schwab-streaming-client import SchwabStreamingClient
+from schwab_streaming_client import SchwabStreamingClient
 
-# Create client with GCS bucket (loads symbols from GCS)
+# With GCS bucket (recommended)
 client = SchwabStreamingClient(
-    debug=True,  # Enable debug logging
+    debug=True,
     gcs_bucket='your-gcs-bucket-name',
-    symbols_file='option_symbols.txt'  # File in GCS bucket
+    option_symbols_file='option_symbols.txt',
+    equity_symbols_file='equity_symbols.txt'
 )
 
-# Create client with custom symbols
+# With local symbols
 client = SchwabStreamingClient(
-    debug=True,  # Enable debug logging
-    equity_symbols=['SPY', 'QQQ', 'IWM'],  # For chart option data
-    option_symbols=['SPY240315C00500000', 'SPY240315P00500000']  # Specific options
+    debug=True,
+    equity_symbols=['SPY', 'QQQ'],
+    option_symbols=[]  # Auto-generated
 )
 ```
 
-### GCS Symbol Management
+## 📊 **Data Output**
 
-The client can load symbols and DTE (days to expiration) from a file in Google Cloud Storage:
+### **1-Minute Equity Data with Indicators**
 
-**File Format** (`option_symbols.txt`):
+`data/equity/SPY.csv`:
 
-```
-SPY,2
-QQQ,3
-AAPL,5
-TSLA,3
+```csv
+timestamp,symbol,sequence,open,high,low,close,volume,chart_day,ema,macd_line,macd_signal,macd_histogram,roc
+1703123456789,SPY,12345,450.25,451.50,449.75,450.80,2500,20240101,450.45,0.15,0.12,0.03,0.25
 ```
 
-**Environment Variable** (in `.env` file):
+### **5-Minute Aggregated Data with Indicators**
 
-```env
-GCS_BUCKET_NAME=your-gcs-bucket-name
+`data/equity/5m/SPY.csv`:
+
+```csv
+timestamp,datetime,open,high,low,close,volume,ema,macd_line,macd_signal,macd_histogram,roc
+1703120400000,2024-01-01 10:00:00 EDT,450.00,451.75,449.50,451.25,12500,450.85,0.35,0.28,0.07,0.45
 ```
 
-### Default Symbols
+### **Option Data with Volume Deltas**
 
-If no GCS bucket is provided, the client uses these defaults:
+`data/options/SPY240315C00450000.csv`:
 
-- **Equity Symbols**: `['SPY', 'QQQ', 'IWM']`
-- **Option Symbols**: `[]` (empty list)
-- **Default DTE**: 2 days for all symbols
-
-## 📁 **File Structure**
-
-```
-schwab-streaming-client/
-├── schwab-streaming-client.py          # Main streaming client
-├── requirements.txt                    # Python dependencies
-├── README.md                          # This file
-├── .env                               # Environment variables (create this)
-├── data/                              # Data storage directory (auto-created)
-│   ├── option_data_SPY240315C00500000_20240101_143022.csv
-│   └── chart_option_data_SPY_20240101_143022.csv
-└── options-symbol-finder/             # Options symbol finder submodule
-    ├── options-symbol-finder.py       # Options symbol finder class
-    └── charles-schwab-authentication-module/  # Authentication submodule
-        ├── schwab_auth.py             # Authentication class
-        └── gcs-python-module/         # Google Cloud Storage module
+```csv
+timestamp,symbol,bid,ask,last,volume,delta,gamma,theta,vega,implied_volatility
+1703123456789,SPY240315C00450000,2.50,2.55,2.52,150,0.65,0.02,-0.15,0.08,0.25
 ```
 
-## 🎮 **Usage Examples**
+## 📈 **Usage Examples**
 
-### Basic Usage
+### **Real-time Streaming with Indicators**
 
 ```python
-# Simple usage with default symbols
-client = SchwabStreamingClient(debug=True)
+# Configure indicators and start streaming
+client = SchwabStreamingClient(debug=True, gcs_bucket='your-bucket')
 
-# Wait for market open and connect
+# Auto-setup with option symbol generation
+client.auto_setup_option_streaming()
+
+# Stream data with real-time indicator calculations
 if client.wait_for_market_open():
     client.connect()
 
-    # Keep running
     try:
         while True:
-            time.sleep(1)
+            time.sleep(60)  # Save data every minute
+            client.save_data_to_csv()
+
+            # Get data summary with indicators
+            summary = client.get_data_summary()
+            print(f"📊 Data Summary: {summary}")
+
     except KeyboardInterrupt:
-        client.save_data_to_csv()
-        summary = client.get_data_summary()
-        print(f"Data Summary: {summary}")
         client.disconnect()
 ```
 
-### Automatic Option Symbol Generation
+### **Custom Indicator Configuration**
 
 ```python
-# Let the client automatically generate option symbols
-equity_symbols = ['AAPL', 'TSLA', 'NVDA']
+# Create custom indicator periods
+custom_periods = {
+    "AAPL": {
+        "1m": {
+            "rsi": 21,
+            "ema": 9,
+            "macd_fast": 12,
+            "macd_slow": 26,
+            "macd_signal": 9
+        },
+        "5m": {
+            "bollinger_bands": 20,
+            "atr": 14,
+            "volatility": 20
+        }
+    }
+}
 
-client = SchwabStreamingClient(
-    debug=True,
-    equity_symbols=equity_symbols,
-    option_symbols=[]  # Will be auto-generated
-)
-
-# Auto-setup generates option symbols for 2 days to expiration
-client.auto_setup_option_streaming(days_to_expiration=2)
+# Save to indicator_periods.json
+import json
+with open('indicator_periods.json', 'w') as f:
+    json.dump(custom_periods, f, indent=2)
 ```
 
-### Manual Option Symbols
+## 🔧 **Advanced Features**
 
-```python
-# Custom equity and option symbols
-equity_symbols = ['AAPL', 'TSLA', 'NVDA']
-option_symbols = [
-    'AAPL240315C00180000',  # AAPL March 15, 2024 $180 Call
-    'TSLA240315P00200000',  # TSLA March 15, 2024 $200 Put
-    'NVDA240315C00500000'   # NVDA March 15, 2024 $500 Call
-]
+### **Market Data Aggregation**
 
-client = SchwabStreamingClient(
-    debug=True,
-    equity_symbols=equity_symbols,
-    option_symbols=option_symbols
-)
-```
+- Automatic 1-minute to 5-minute bar conversion
+- Configurable timeframe aggregation via `market-data-aggregator` module
+- Preservation of OHLCV integrity during aggregation
 
-### Data Management
+### **Volume-Based Recording**
 
-```python
-# Save data to CSV files
-client.save_data_to_csv()
+- Option data only recorded when `total_volume` changes
+- Reduces noise and focuses on actual trading activity
+- Separate streaming vs. recording DataFrames
 
-# Get data summary
-summary = client.get_data_summary()
-print(f"Option data points: {summary['option_symbols']}")
-print(f"Chart option data points: {summary['chart_option_symbols']}")
+### **Symbol Management**
 
-# Access raw data
-option_data = client.option_data
-chart_option_data = client.chart_option_data
+- GCS integration for dynamic symbol loading
+- Automatic option symbol generation with DTE filtering
+- Configurable expiration dates per equity symbol
 
-# Generate option symbols manually
-option_symbols = client.generate_option_symbols(days_to_expiration=5)
-print(f"Generated {len(option_symbols)} option symbols")
-```
+### **Error Handling & Resilience**
 
-## 🔌 **WebSocket Services**
+- Automatic WebSocket reconnection
+- Graceful handling of missing indicator data
+- Market hours validation and waiting
 
-The client subscribes to two Schwab WebSocket services:
+## 🛠️ **Dependencies**
 
-### 1. OPTION Service
+### **Core Modules**
 
-- **Purpose**: Real-time option contract data
-- **Data**: Bid, ask, last, volume, open interest, Greeks, implied volatility
-- **Symbols**: Specific option contract symbols (e.g., 'SPY240315C00500000')
+- `websocket-client`: WebSocket connectivity
+- `httpx`: HTTP API requests
+- `pandas`: Data manipulation and analysis
+- `pytz`: Timezone handling
 
-### 2. CHART_OPTION Service
+### **Integrated Submodules**
 
-- **Purpose**: OHLCV data for options related to equity symbols
-- **Data**: Open, high, low, close, volume, timestamp
-- **Symbols**: Equity symbols (e.g., 'SPY', 'QQQ')
+- `indicator-calculator`: Technical analysis calculations
+- `market-data-aggregator`: Timeframe conversion
+- `options-symbol-finder`: Option symbol generation
+- `charles-schwab-authentication-module`: OAuth 2.0 authentication
 
-## 🔍 **Options Symbol Finder**
+## 📝 **Logging & Debugging**
 
-The client integrates with the Options Symbol Finder module to automatically generate option symbols:
-
-### Features
-
-- **Expiration Chain Discovery**: Finds available expiration dates for any symbol
-- **Strike Price Selection**: Automatically selects nearest strikes plus 3 above and 3 below
-- **Multiple Symbol Support**: Processes multiple equity symbols simultaneously
-- **Days to Expiration Filtering**: Filters options by minimum days to expiration
-
-### Usage
-
-```python
-# Auto-generate option symbols for 2 days to expiration
-client.auto_setup_option_streaming(days_to_expiration=2)
-
-# Manually generate option symbols
-option_symbols = client.generate_option_symbols(days_to_expiration=5)
-```
-
-## ⏰ **Market Hours**
-
-The client respects market hours:
-
-- **Market Open**: 9:30 AM ET
-- **Market Close**: 4:00 PM ET
-- **Weekends**: Automatically detects and waits for next trading day
-
-## 🐛 **Debug Mode**
-
-Enable debug mode for detailed logging:
+Enable debug mode for comprehensive logging:
 
 ```python
 client = SchwabStreamingClient(debug=True)
@@ -298,92 +352,38 @@ client = SchwabStreamingClient(debug=True)
 
 Debug output includes:
 
-- WebSocket connection status
-- Subscription requests
-- Incoming data messages
-- Data parsing details
-- Error messages with stack traces
+- 🔌 WebSocket connection events
+- 📊 Indicator calculations
+- 📈 Data aggregation status
+- 📤 Subscription confirmations
+- ❌ Error details with stack traces
 
-## 📊 **Data Storage**
+## ⚠️ **Important Notes**
 
-### In-Memory Storage
+### **Market Hours**
 
-Data is stored in memory during streaming:
+- Automatic market hours detection (9:30 AM - 4:00 PM ET)
+- Weekend detection and waiting for next trading day
+- Graceful handling of market closures
 
-- `client.option_data`: Dictionary of option symbol data
-- `client.chart_option_data`: Dictionary of chart option data
+### **Rate Limiting**
 
-### CSV Export
+- Respects Schwab API rate limits
+- Automatic connection management
+- Single connection per user enforcement
 
-Data can be saved to timestamped CSV files:
+### **Data Integrity**
 
-```python
-client.save_data_to_csv()
-# Creates files like:
-# - data/option_data_SPY240315C00500000_20240101_143022.csv
-# - data/chart_option_data_SPY_20240101_143022.csv
-```
-
-## 🔐 **Authentication**
-
-The client uses the Charles Schwab authentication module (included as a submodule) for OAuth 2.0 authentication. The authentication module:
-
-- Handles token refresh automatically
-- Supports Google Cloud Storage for token backup
-- Provides fresh tokens on each run
-- Manages all authentication complexity
-
-## 🛠 **Dependencies**
-
-### Core Dependencies
-
-- `websocket-client`: WebSocket connections
-- `httpx`: HTTP requests for API calls
-- `pandas`: Data manipulation and CSV export
-- `pytz`: Timezone handling
-
-### Authentication Dependencies
-
-- `requests`: HTTP requests for authentication
-- `python-dotenv`: Environment variable management
-- `google-cloud-storage`: Cloud storage integration (optional)
-
-## 🚨 **Error Handling**
-
-The client includes comprehensive error handling for:
-
-- WebSocket connection failures
-- Authentication errors
-- Data parsing errors
-- Market hours validation
-- File I/O errors
-
-## 🔄 **Reconnection**
-
-The client automatically handles:
-
-- Connection timeouts
-- WebSocket disconnections
-- Authentication token refresh
-- Market hours validation
-
-## 📝 **Logging**
-
-The client provides detailed logging with emojis for easy identification:
-
-- 🔌 Connection events
-- 📤 Subscription requests
-- 📥 Data reception
-- 📊 Data processing
-- ❌ Error messages
-- ✅ Success confirmations
+- All timestamps in milliseconds since epoch
+- Volume deltas calculated for option data
+- OHLCV data validated during aggregation
 
 ## 🤝 **Contributing**
 
 1. Fork the repository
 2. Create a feature branch
-3. Make your changes
-4. Add tests if applicable
+3. Update submodules if needed: `git submodule update --recursive`
+4. Make your changes with comprehensive testing
 5. Submit a pull request
 
 ## 📄 **License**
@@ -392,23 +392,4 @@ This project is licensed under the MIT License.
 
 ## ⚠️ **Disclaimer**
 
-This tool is for educational and development purposes. Always follow Charles Schwab's API terms of service and rate limiting guidelines. The data collected should be used responsibly and in compliance with applicable regulations.
-
-## 🆘 **Support**
-
-For issues related to:
-
-- **Schwab API**: Contact Charles Schwab Developer Support
-- **Authentication**: Check the authentication module documentation
-- **This Tool**: Open an issue in this repository
-
-## 📈 **Future Enhancements**
-
-Potential future features:
-
-- Real-time data visualization
-- Option chain analysis
-- Greeks calculations
-- Risk metrics
-- Historical data integration
-- Multiple exchange support
+This tool is for educational and development purposes. Always follow Charles Schwab's API terms of service and rate limiting guidelines. The calculated indicators are for informational purposes only and should not be considered financial advice.
