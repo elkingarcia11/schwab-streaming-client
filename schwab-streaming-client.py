@@ -100,8 +100,8 @@ class SchwabStreamingClient:
         # Track previous values for each option symbol to handle partial updates
         self.previous_option_values = {}
         
-        # Track previous volume for each symbol to determine when to save CSV
-        self.previous_volumes = {}
+        # Track previous mark_price for each symbol to determine when to save CSV
+        self.previous_mark_prices = {}
         
         # Track symbol order for CHART_EQUITY data correlation
         self.chart_equity_symbol_order = []
@@ -808,12 +808,12 @@ class SchwabStreamingClient:
                                 # Get the complete streaming data (latest record with all fields filled)
                                 complete_streaming_data = self.option_data[symbol][-1]
                                 
-                                # Check if total volume has changed from previous state
-                                previous_volume = self.previous_volumes.get(symbol, 0)
-                                current_volume = complete_streaming_data.get('total_volume', 0)
+                                # Check if mark_price has changed from previous state
+                                previous_mark_price = self.previous_mark_prices.get(symbol, 0)
+                                current_mark_price = complete_streaming_data.get('mark_price', 0)
                                 
-                                # Only update recording DataFrame and save to CSV if volume has changed
-                                if current_volume != previous_volume:
+                                # Only update recording DataFrame and save to CSV if mark_price has changed
+                                if current_mark_price != previous_mark_price:
                                     # Initialize recording DataFrame if needed
                                     if symbol not in self.option_recording_data:
                                         self.option_recording_data[symbol] = []
@@ -825,10 +825,10 @@ class SchwabStreamingClient:
                                     self.save_option_data_to_csv(symbol, complete_streaming_data)
                                     
                                     if self.debug:
-                                        print(f"💾 Volume changed for {symbol}: {previous_volume} -> {current_volume}")
+                                        print(f"💾 Mark price changed for {symbol}: {previous_mark_price} -> {current_mark_price}")
                                 
-                                # Update the previous volume for next comparison
-                                self.previous_volumes[symbol] = current_volume
+                                # Update the previous mark_price for next comparison
+                                self.previous_mark_prices[symbol] = current_mark_price
                                 
                                 if self.debug:
                                     # Show a summary of non-zero fields from complete streaming data for cleaner debug output
