@@ -1,10 +1,11 @@
 """
-Schwab Streaming Client - Option Data Focus
+Schwab Streaming Client - Real-time Data Collection
     - Connects to WebSocket API
     - Subscribes to option symbol data
-    - Subscribes to chart option data for equity symbols
-    - Parses and stores incoming data
-    - Simple data collection without indicators or signals
+    - Subscribes to chart option data for equity symbols  
+    - Parses and saves data to CSV in real-time
+    - Calculates technical indicators on streaming data
+    - No batch saving needed - all data saved as it arrives
 """
 
 import json
@@ -100,8 +101,8 @@ class SchwabStreamingClient:
         # Track previous values for each option symbol to handle partial updates
         self.previous_option_values = {}
         
-        # Track previous mark_price for each symbol to determine when to save CSV
-        self.previous_mark_prices = {}
+        # Track previous values for recording condition checks
+        self.previous_last_prices = {}
         
         # Track symbol order for CHART_EQUITY data correlation
         self.chart_equity_symbol_order = []
@@ -233,6 +234,9 @@ class SchwabStreamingClient:
                     indicator_periods = json.load(f)
                 if self.debug:
                     print(f"📊 Loaded indicator periods configuration for {len(indicator_periods)} symbols")
+                    for symbol, timeframes in indicator_periods.items():
+                        for timeframe, indicators in timeframes.items():
+                            print(f"   {symbol} {timeframe}: {indicators}")
                 return indicator_periods
             else:
                 if self.debug:
@@ -343,6 +347,106 @@ class SchwabStreamingClient:
             if self.debug:
                 print(f"❌ Error calculating 5m indicators for {symbol}: {e}")
             return aggregated_bar
+    
+    def calculate_option_indicators(self, symbol: str, option_data: dict) -> dict:
+        """
+        Calculate technical indicators for option data using RECORDED history.
+        Each period in indicator calculations represents a recorded row (meaningful changes only).
+        Only called when last_price has changed to optimize performance.
+        """
+        try:
+            # Extract base symbol for option contracts (e.g., "QQQ" from "QQQ250725P00564000")
+            base_symbol = symbol[:3] if len(symbol) > 5 else symbol  # Get first 3 chars for options
+            
+            # Check if we have indicator periods for this base symbol and timeframe
+            if base_symbol not in self.indicator_periods or '1m' not in self.indicator_periods[base_symbol]:
+                if self.debug:
+                    print(f"⚠️  No indicator config found for {base_symbol}")
+                return option_data  # Return unchanged if no configuration
+            
+            indicator_config = self.indicator_periods[base_symbol]['1m']
+            
+            # Get existing RECORDED data for this symbol to build history (not streaming data)
+            if symbol not in self.option_recording_data or len(self.option_recording_data[symbol]) == 0:
+                if self.debug:
+                    print(f"⚠️  No recorded data for {symbol} - skipping indicators")
+                return option_data  # Not enough recorded data for indicators
+            
+            total_recorded_count = len(self.option_recording_data[symbol])
+            historical_count = total_recorded_count - 1  # Exclude current row from history
+            if self.debug:
+                print(f"📊 Calculating indicators for {symbol}: {historical_count} historical + 1 current = {total_recorded_count} total")
+                print(f"📋 Indicator config: {indicator_config}")
+            
+            # Convert RECORDED option data history to DataFrame format expected by indicator calculator
+            # Use all recorded data EXCEPT the current row (which we'll pass as new_row)
+            option_history = []
+            for opt_record in self.option_recording_data[symbol][:-1]:  # Exclude the last (current) row
+                # Convert option fields to OHLCV-like format for indicator calculation
+                price = opt_record.get('last_price', 0)
+                option_history.append({
+                    'timestamp': pd.Timestamp.now().value // 10**6,  # Current timestamp in ms
+                    'open': price,
+                    'high': price,  # Options don't have OHLC, use price for all
+                    'low': price,
+                    'close': price,
+                    'last_price': opt_record.get('last_price', 0),  # Key field for options
+                    'volume': opt_record.get('total_volume', 0)
+                })
+            
+            existing_data = pd.DataFrame(option_history)  # Historical data without current row
+            
+            # Convert current option data to pandas Series format
+            price = option_data.get('last_price', 0)
+            new_row = pd.Series({
+                'timestamp': pd.Timestamp.now().value // 10**6,
+                'open': price,
+                'high': price,
+                'low': price,
+                'close': price, 
+                'last_price': option_data.get('last_price', 0),
+                'volume': option_data.get('total_volume', 0)
+            })
+            
+            # Always attempt to calculate indicators - let each indicator decide if it has enough data
+            historical_rows = len(existing_data)
+            total_available = historical_rows + 1  # existing + new row
+            
+            if self.debug:
+                print(f"🔍 Available data: {historical_rows} historical + 1 current = {total_available} rows for indicator calculation")
+            
+            # Calculate indicators - each indicator will return empty if insufficient data
+            enhanced_row = self.indicator_calculator.calculate_latest_tick_indicators(
+                existing_data=existing_data,
+                new_row=new_row,
+                indicator_periods=indicator_config,
+                is_option=True  # Use last_price for calculations
+            )
+            
+            # Add indicator values to option_data (only non-empty values)
+            indicators_added = []
+            indicators_empty = []
+            for col in enhanced_row.index:
+                if col not in ['timestamp', 'open', 'high', 'low', 'close', 'last_price', 'volume']:
+                    value = enhanced_row[col]
+                    if value != "" and value != 0 and not pd.isna(value):  # Only add meaningful values
+                        option_data[col] = value
+                        indicators_added.append(f"{col}={value}")
+                    else:
+                        indicators_empty.append(col)
+            
+            if self.debug:
+                if indicators_added:
+                    print(f"📊 Added indicators for {symbol}: {', '.join(indicators_added)}")
+                if indicators_empty:
+                    print(f"⏭️  Empty indicators for {symbol}: {', '.join(indicators_empty)} (insufficient data)")
+            
+            return option_data
+            
+        except Exception as e:
+            if self.debug:
+                print(f"❌ Error calculating option indicators for {symbol}: {e}")
+            return option_data
     
     def wait_for_market_open(self):
         """
@@ -808,32 +912,49 @@ class SchwabStreamingClient:
                                 # Get the complete streaming data (latest record with all fields filled)
                                 complete_streaming_data = self.option_data[symbol][-1]
                                 
-                                # Check if mark_price has changed from previous state
-                                previous_mark_price = self.previous_mark_prices.get(symbol, 0)
-                                current_mark_price = complete_streaming_data.get('mark_price', 0)
+                                # Get current last_price value (simple field check)
+                                current_last_price = complete_streaming_data.get('last_price', 0)  # Key 4: Last Price
+                                previous_last_price = self.previous_last_prices.get(symbol, 0)
                                 
-                                # Only update recording DataFrame and save to CSV if mark_price has changed
-                                if current_mark_price != previous_mark_price:
+                                # Check if last_price has changed - this is our recording condition
+                                last_price_changed = current_last_price != previous_last_price
+                                
+                                # Record every time last_price changes
+                                if last_price_changed:
                                     # Initialize recording DataFrame if needed
                                     if symbol not in self.option_recording_data:
                                         self.option_recording_data[symbol] = []
                                     
-                                    # Add complete data to recording DataFrame (not just the partial update)
+                                    # Add to recording DataFrame first (without indicators)
                                     self.option_recording_data[symbol].append(complete_streaming_data)
                                     
-                                    # Save complete data to CSV
+                                    # Now calculate indicators using the recorded history + this new row
+                                    complete_streaming_data = self.calculate_option_indicators(symbol, complete_streaming_data)
+                                    
+                                    # Update the streaming data with indicators
+                                    self.option_data[symbol][-1] = complete_streaming_data
+                                    
+                                    # Update the recorded data with calculated indicators
+                                    self.option_recording_data[symbol][-1] = complete_streaming_data
+                                    
+                                    # Save to CSV with whatever indicators are available (some may be empty)
                                     self.save_option_data_to_csv(symbol, complete_streaming_data)
                                     
                                     if self.debug:
-                                        print(f"💾 Mark price changed for {symbol}: {previous_mark_price} -> {current_mark_price}")
+                                        print(f"💾 Last Price changed for {symbol}: {previous_last_price} -> {current_last_price}")
+                                        # Show which indicators were calculated
+                                        indicators_calculated = [k for k in complete_streaming_data.keys() 
+                                                               if k not in ['timestamp', 'symbol', 'last_price', 'mark_price', 'total_volume', '_symbol']
+                                                               and complete_streaming_data[k] != "" and complete_streaming_data[k] != 0]
+                                        if indicators_calculated:
+                                            print(f"📊 Calculated indicators: {indicators_calculated}")
                                 
-                                # Update the previous mark_price for next comparison
-                                self.previous_mark_prices[symbol] = current_mark_price
+                                # Always update previous last_price for next comparison
+                                self.previous_last_prices[symbol] = current_last_price
                                 
-                                if self.debug:
-                                    # Show a summary of non-zero fields from complete streaming data for cleaner debug output
-                                    non_zero_fields = {k: v for k, v in complete_streaming_data.items() if v != 0 and v != ''}
-                                    print(f"📊 Complete option data for {symbol}: {non_zero_fields}")
+                                # Debug output when last_price didn't change
+                                if self.debug and not last_price_changed:
+                                    print(f"⏭️  {symbol}: Last price unchanged ({current_last_price}) - no recording")
                             else:
                                 if self.debug:
                                     print(f"⚠️ Failed to parse option data for: {content_item.get('key', 'NO_KEY')}")
@@ -1033,10 +1154,11 @@ class SchwabStreamingClient:
     def save_option_data_to_csv(self, symbol: str, data: dict):
         """
         Save a new row of option data to CSV file.
+        Called every time last_price changes.
         
         Args:
-            symbol (str): Option symbol name (e.g., "SPY   250721C00630000")
-            data (dict): Option data row to save
+            symbol (str): Option symbol name (e.g., "SPY   250721C00630000") 
+            data (dict): Option data row to save (includes calculated indicators, some may be empty)
         """
         try:
             # Create options directory if it doesn't exist
@@ -1059,6 +1181,60 @@ class SchwabStreamingClient:
             # Create ordered dictionary with timestamp first
             ordered_data = {'timestamp': timestamp}
             ordered_data.update(csv_data)
+            
+            # Ensure all potential indicator columns are present (even if empty) for consistent headers
+            # Group related indicators together in desired column order
+            base_symbol = symbol[:3] if len(symbol) > 5 else symbol
+            if base_symbol in self.indicator_periods and '1m' in self.indicator_periods[base_symbol]:
+                indicator_config = self.indicator_periods[base_symbol]['1m']
+                
+                # Define ordered indicator groups
+                indicator_groups = [
+                    # Group 1: Moving Averages (EMA and VWMA together)
+                    ['ema', 'vwma'],
+                    # Group 2: Rate of Change (ROC and ROC of ROC together)  
+                    ['roc', 'roc_of_roc'],
+                    # Group 3: MACD (line, signal, histogram together)
+                    ['macd_line', 'macd_signal', 'macd_histogram'],
+                    # Group 4: Other single indicators
+                    ['rsi', 'sma', 'volatility', 'atr'],
+                    # Group 5: Stochastic RSI
+                    ['stoch_rsi_k', 'stoch_rsi_d'],
+                    # Group 6: Bollinger Bands
+                    ['bollinger_upper', 'bollinger_lower', 'bollinger_bands_width']
+                ]
+                
+                # Add indicators in the specified order, only if they're configured
+                for group in indicator_groups:
+                    for indicator in group:
+                        # Check if this indicator should exist based on config
+                        should_add = False
+                        if indicator == 'ema' and 'ema' in indicator_config:
+                            should_add = True
+                        elif indicator == 'vwma' and 'vwma' in indicator_config:
+                            should_add = True
+                        elif indicator == 'roc' and 'roc' in indicator_config:
+                            should_add = True
+                        elif indicator == 'roc_of_roc' and 'roc_of_roc' in indicator_config:
+                            should_add = True
+                        elif indicator in ['macd_line', 'macd_signal', 'macd_histogram'] and any(k in indicator_config for k in ['macd_fast', 'macd_slow', 'macd_signal']):
+                            should_add = True
+                        elif indicator == 'rsi' and 'rsi' in indicator_config:
+                            should_add = True
+                        elif indicator == 'sma' and 'sma' in indicator_config:
+                            should_add = True
+                        elif indicator == 'volatility' and 'volatility' in indicator_config:
+                            should_add = True
+                        elif indicator == 'atr' and 'atr' in indicator_config:
+                            should_add = True
+                        elif indicator in ['stoch_rsi_k', 'stoch_rsi_d'] and any(k in indicator_config for k in ['stoch_rsi_k', 'stoch_rsi_d']):
+                            should_add = True
+                        elif indicator in ['bollinger_upper', 'bollinger_lower', 'bollinger_bands_width'] and 'bollinger_bands' in indicator_config:
+                            should_add = True
+                        
+                        # Add indicator column if it should exist and isn't already present
+                        if should_add and indicator not in ordered_data:
+                            ordered_data[indicator] = ""
             
             # Calculate volume delta (current total_volume - previous row total_volume)
             current_total_volume = ordered_data.get('total_volume', 0)
@@ -1186,62 +1362,20 @@ class SchwabStreamingClient:
             print(f"❌ Error saving 5-minute chart data for {symbol}: {e}")
 
     def save_data_to_csv(self):
-        """Save collected recording data to CSV files (only data where volume changed)"""
-        try:
-            current_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        """
+        Legacy method - no longer needed since data is saved in real-time.
+        Kept for backward compatibility and manual cleanup if needed.
+        """
+        print("ℹ️  Data is already saved in real-time - no batch saving needed")
+        
+        # Clear memory to prevent buildup since data is saved in real-time
+        if self.option_recording_data:
+            print(f"🧹 Clearing {len(self.option_recording_data)} option recording entries from memory")
+            self.option_recording_data.clear()
             
-            # Save option recording data (only data where volume changed)
-            for symbol, data_list in self.option_recording_data.items():
-                if data_list:
-                    # Remove internal fields and add timestamp/volume delta for each row
-                    clean_data_list = []
-                    previous_total_volume = 0
-                    
-                    for i, data_item in enumerate(data_list):
-                        clean_item = data_item.copy()
-                        clean_item.pop('_symbol', None)  # Remove symbol since filename contains it
-                        
-                        # Create ordered dictionary with timestamp first
-                        if 'timestamp' not in clean_item:
-                            ordered_item = {'timestamp': current_timestamp}
-                            ordered_item.update(clean_item)
-                        else:
-                            # Reorder to ensure timestamp is first
-                            timestamp_value = clean_item.pop('timestamp')
-                            ordered_item = {'timestamp': timestamp_value}
-                            ordered_item.update(clean_item)
-                        
-                        # Calculate volume delta if not already present
-                        if 'volume' not in ordered_item:
-                            current_total_volume = ordered_item.get('total_volume', 0)
-                            if i == 0:
-                                ordered_item['volume'] = current_total_volume  # First row
-                            else:
-                                ordered_item['volume'] = current_total_volume - previous_total_volume
-                            previous_total_volume = current_total_volume
-                        
-                        clean_data_list.append(ordered_item)
-                    
-                    df = pd.DataFrame(clean_data_list)
-                    # Clean the symbol for filename (remove spaces and special characters)
-                    clean_symbol = symbol.replace(' ', '').replace('/', '_').replace('\\', '_')
-                    filename = f"data/options/{clean_symbol}.csv"
-                    df.to_csv(filename, index=False)
-                    print(f"💾 Saved option recording data for {symbol} to {filename}")
-            
-            # Save chart equity recording data
-            for symbol, data_list in self.chart_recording_data.items():
-                if data_list:
-                    # Use chart data as-is (already contains timestamp (ms) from chart_time)
-                    df = pd.DataFrame(data_list)
-                    # Clean the symbol for filename (remove spaces and special characters)
-                    clean_symbol = symbol.replace(' ', '').replace('/', '_').replace('\\', '_')
-                    filename = f"data/equity/{clean_symbol}.csv"
-                    df.to_csv(filename, index=False)
-                    print(f"💾 Saved chart equity recording data for {symbol} to {filename}")
-                    
-        except Exception as e:
-            print(f"❌ Error saving data to CSV: {e}")
+        if self.chart_recording_data:
+            print(f"🧹 Clearing {len(self.chart_recording_data)} chart recording entries from memory")
+            self.chart_recording_data.clear()
 
     def generate_option_symbols(self, days_to_expiration: int = None) -> List[str]:
         """
@@ -1477,10 +1611,9 @@ if __name__ == "__main__":
                 client.connect()
                 continue
             
-            # Save data every 5 minutes
+            # Print data summary every 5 minutes (data is saved in real-time)
             if time.time() - last_save_time >= 300:  # 5 minutes
-                print("💾 Periodic data save...")
-                client.save_data_to_csv()
+                print("📊 Periodic status check...")
                 last_save_time = time.time()
                 
                 # Print data summary
@@ -1491,11 +1624,9 @@ if __name__ == "__main__":
             
     except KeyboardInterrupt:
         print("\n👋 Shutting down...")
-        # Save final data
-        client.save_data_to_csv()
-        # Print summary
+        # Print final summary (data already saved in real-time)
         summary = client.get_data_summary()
-        print(f"📊 Data Summary: {summary}")
+        print(f"📊 Final Data Summary: {summary}")
         client.disconnect()
     except Exception as e:
         print(f"❌ Error: {e}")
