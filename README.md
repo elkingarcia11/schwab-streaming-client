@@ -223,7 +223,7 @@ client = SchwabStreamingClient(
 `data/equity/SPY.csv`:
 
 ```csv
-timestamp,symbol,sequence,open,high,low,close,volume,chart_day,ema,macd_line,macd_signal,macd_histogram,roc
+timestamp,symbol,sequence,open,high,low,close,volume,chart_day,ema,macd_line,macd_signal,roc
 1703123456789,SPY,12345,450.25,451.50,449.75,450.80,2500,20240101,450.45,0.15,0.12,0.03,0.25
 ```
 
@@ -232,7 +232,7 @@ timestamp,symbol,sequence,open,high,low,close,volume,chart_day,ema,macd_line,mac
 `data/equity/5m/SPY.csv`:
 
 ```csv
-timestamp,datetime,open,high,low,close,volume,ema,macd_line,macd_signal,macd_histogram,roc
+timestamp,datetime,open,high,low,close,volume,ema,macd_line,macd_signal,roc
 1703120400000,2024-01-01 10:00:00 EDT,450.00,451.75,449.50,451.25,12500,450.85,0.35,0.28,0.07,0.45
 ```
 

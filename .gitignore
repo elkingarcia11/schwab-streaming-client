@@ -6,3 +6,5 @@ equity_symbols.txt
 option_symbols.txt
 data/
 __pycache__/
+old_periods.json
+.DS_Store

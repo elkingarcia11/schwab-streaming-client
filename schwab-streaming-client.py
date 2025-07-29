@@ -2,7 +2,7 @@
 Schwab Streaming Client - Real-time Data Collection
     - Connects to WebSocket API
     - Subscribes to option symbol data
-    - Subscribes to chart option data for equity symbols  
+    - Subscribes to chart option data for equity symbols
     - Parses and saves data to CSV in real-time
     - Calculates technical indicators on streaming data
     - No batch saving needed - all data saved as it arrives
@@ -42,6 +42,15 @@ from main import process_streaming_tick
 # Import indicator-calculator module
 sys.path.append(os.path.join(os.path.dirname(__file__), 'indicator-calculator'))
 from indicator_calculator import IndicatorCalculator
+
+# Import signal-checker module
+spec = importlib.util.spec_from_file_location(
+    "signal_checker", 
+    os.path.join(os.path.dirname(__file__), 'signal-checker.py')
+)
+signal_checker_module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(signal_checker_module)
+SignalChecker = signal_checker_module.SignalChecker
 
 class SchwabStreamingClient:
     """Streaming client for Schwab API - handles both option data and chart data"""
@@ -110,6 +119,9 @@ class SchwabStreamingClient:
         # Initialize indicator calculator
         self.indicator_calculator = IndicatorCalculator()
         self.indicator_periods = self.load_indicator_periods()
+        
+        # Initialize signal checker for trade signals
+        self.signal_checker = SignalChecker(debug=debug)
         
         # WebSocket connection
         self.ws: Optional[websocket.WebSocketApp] = None
@@ -447,6 +459,129 @@ class SchwabStreamingClient:
             if self.debug:
                 print(f"❌ Error calculating option indicators for {symbol}: {e}")
             return option_data
+    
+    def process_trading_signals(self, symbol: str, option_data: dict) -> dict:
+        """
+        Process trading signals for options with calculated indicators
+        
+        Args:
+            symbol: Option symbol (e.g., "QQQ250731C00567000")
+            option_data: Option data with calculated indicators
+            
+        Returns:
+            Signal processing result
+        """
+        try:
+            # Convert option_data dict to pandas Series for signal checker
+            row_data = pd.Series(option_data)
+            
+            # Process the row through signal checker
+            signal_result = self.signal_checker.process_streaming_row(symbol, row_data)
+            
+            # Log trade actions
+            if signal_result.get('action') == 'enter_trade':
+                trade_details = signal_result.get('trade_details', {})
+                base_symbol, contract_type = self.signal_checker.extract_symbol_info(symbol)
+                
+                if self.debug:
+                    print(f"🟢 TRADE ENTERED: {base_symbol}_{contract_type}")
+                    print(f"   Entry Price: ${trade_details.get('entry_price', 0):.4f}")
+                    signal_details = trade_details.get('signal_details', {})
+                    if 'trend_conditions' in signal_details and 'momentum_conditions' in signal_details:
+                        print(f"   Trend: {signal_details['trend_conditions']}")
+                        print(f"   Momentum: {signal_details['momentum_conditions']}")
+                    
+            elif signal_result.get('action') == 'exit_trade':
+                trade_details = signal_result.get('trade_details', {})
+                base_symbol, contract_type = self.signal_checker.extract_symbol_info(symbol)
+                
+                if self.debug:
+                    profit = trade_details.get('profit', 0)
+                    profit_pct = trade_details.get('profit_pct', 0)
+                    exit_reason = trade_details.get('exit_reason', 'unknown')
+                    print(f"🔴 TRADE EXITED: {base_symbol}_{contract_type}")
+                    print(f"   Exit Price: ${trade_details.get('exit_price', 0):.4f}")
+                    print(f"   Profit: ${profit:.4f} ({profit_pct:.2f}%)")
+                    print(f"   Reason: {exit_reason}")
+                    
+                    # Show trade summary every few trades
+                    summary = self.signal_checker.get_trade_summary()
+                    if summary['total_trades'] > 0 and summary['total_trades'] % 5 == 0:
+                        print(f"📊 Trade Summary: {summary['total_trades']} trades, "
+                              f"{summary['win_rate']:.1f}% win rate, "
+                              f"${summary['total_profit']:.2f} total P&L")
+                        
+            elif signal_result.get('action') == 'holding':
+                if self.debug and 'unrealized_pnl' in signal_result:
+                    unrealized = signal_result['unrealized_pnl']
+                    if abs(unrealized) > 0.10:  # Only show significant P&L changes
+                        base_symbol, contract_type = self.signal_checker.extract_symbol_info(symbol)
+                        print(f"📈 HOLDING: {base_symbol}_{contract_type} - Unrealized P&L: ${unrealized:.4f}")
+            
+            # Save trades periodically
+            summary = self.signal_checker.get_trade_summary()
+            if summary['total_trades'] > 0 and summary['total_trades'] % 10 == 0:
+                self.signal_checker.save_trades_to_file(f'data/trades_history_{datetime.now().strftime("%Y%m%d")}.json')
+            
+            return signal_result
+            
+        except Exception as e:
+            if self.debug:
+                print(f"❌ Error processing trading signals for {symbol}: {e}")
+            return {'action': 'error', 'error': str(e)}
+    
+    def get_trading_summary(self) -> dict:
+        """
+        Get comprehensive trading summary including active and completed trades
+        
+        Returns:
+            Dictionary with trading performance metrics
+        """
+        try:
+            summary = self.signal_checker.get_trade_summary()
+            
+            # Add active trades details
+            active_trades_details = []
+            for symbol, trade_info in self.signal_checker.active_trades.items():
+                base_symbol, contract_type = self.signal_checker.extract_symbol_info(symbol)
+                active_trades_details.append({
+                    'symbol': f"{base_symbol}_{contract_type}",
+                    'full_symbol': symbol,
+                    'entry_price': trade_info.get('entry_price', 0),
+                    'entry_timestamp': trade_info.get('entry_timestamp', ''),
+                    'unrealized_pnl': trade_info.get('max_price_seen', 0) - trade_info.get('entry_price', 0)
+                })
+            
+            summary['active_trades_details'] = active_trades_details
+            summary['timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            
+            return summary
+            
+        except Exception as e:
+            return {'error': f"Failed to get trading summary: {e}"}
+    
+    def save_trading_data(self, filename: str = None):
+        """
+        Manually save trading data to file
+        
+        Args:
+            filename: Optional custom filename
+        """
+        try:
+            if filename is None:
+                filename = f'data/trades_history_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json'
+            
+            self.signal_checker.save_trades_to_file(filename)
+            
+            if self.debug:
+                summary = self.get_trading_summary()
+                print(f"💾 Saved trading data to {filename}")
+                print(f"   Total trades: {summary.get('total_trades', 0)}")
+                print(f"   Active trades: {summary.get('active_trades', 0)}")
+                print(f"   Total P&L: ${summary.get('total_profit', 0):.2f}")
+                
+        except Exception as e:
+            print(f"❌ Error saving trading data: {e}")
     
     def wait_for_market_open(self):
         """
@@ -931,6 +1066,9 @@ class SchwabStreamingClient:
                                     # Now calculate indicators using the recorded history + this new row
                                     complete_streaming_data = self.calculate_option_indicators(symbol, complete_streaming_data)
                                     
+                                    # Process trading signals after indicators are calculated
+                                    signal_result = self.process_trading_signals(symbol, complete_streaming_data)
+                                    
                                     # Update the streaming data with indicators
                                     self.option_data[symbol][-1] = complete_streaming_data
                                     
@@ -1157,7 +1295,7 @@ class SchwabStreamingClient:
         Called every time last_price changes.
         
         Args:
-            symbol (str): Option symbol name (e.g., "SPY   250721C00630000") 
+            symbol (str): Option symbol name (e.g., "SPY   250721C00630000")
             data (dict): Option data row to save (includes calculated indicators, some may be empty)
         """
         try:
@@ -1195,7 +1333,7 @@ class SchwabStreamingClient:
                     # Group 2: Rate of Change (ROC and ROC of ROC together)  
                     ['roc', 'roc_of_roc'],
                     # Group 3: MACD (line, signal, histogram together)
-                    ['macd_line', 'macd_signal', 'macd_histogram'],
+                    ['macd_line', 'macd_signal'],
                     # Group 4: Other single indicators
                     ['rsi', 'sma', 'volatility', 'atr'],
                     # Group 5: Stochastic RSI
@@ -1217,7 +1355,7 @@ class SchwabStreamingClient:
                             should_add = True
                         elif indicator == 'roc_of_roc' and 'roc_of_roc' in indicator_config:
                             should_add = True
-                        elif indicator in ['macd_line', 'macd_signal', 'macd_histogram'] and any(k in indicator_config for k in ['macd_fast', 'macd_slow', 'macd_signal']):
+                        elif indicator in ['macd_line', 'macd_signal'] and any(k in indicator_config for k in ['macd_fast', 'macd_slow', 'macd_signal']):
                             should_add = True
                         elif indicator == 'rsi' and 'rsi' in indicator_config:
                             should_add = True
@@ -1256,8 +1394,43 @@ class SchwabStreamingClient:
             
             ordered_data['volume'] = volume_delta
             
-            # Convert data to DataFrame
-            df_new = pd.DataFrame([ordered_data])
+            # Define explicit column order for consistent CSV structure
+            # Start with core streaming data columns
+            base_columns = [
+                'timestamp', 'symbol', 'description', 'bid_price', 'ask_price', 'last_price',
+                'high_price', 'low_price', 'close_price', 'total_volume', 'volume', 'open_interest',
+                'volatility', 'money_intrinsic_value', 'expiration_year', 'multiplier', 'digits',
+                'open_price', 'bid_size', 'ask_size', 'last_size', 'net_change', 'strike_price',
+                'contract_type', 'underlying', 'expiration_month', 'deliverables', 'time_value',
+                'expiration_day', 'days_to_expiration', 'delta', 'gamma', 'theta', 'vega', 'rho',
+                'security_status', 'theoretical_option_value', 'underlying_price', 'uv_expiration_type',
+                'mark_price', 'quote_time', 'trade_time', 'exchange', 'exchange_name',
+                'last_trading_day', 'settlement_type', 'net_percent_change', 'mark_price_net_change',
+                'mark_price_percent_change', 'implied_yield', 'is_penny_pilot', 'option_root',
+                'week_52_high', 'week_52_low', 'indicative_ask_price', 'indicative_bid_price',
+                'indicative_quote_time', 'exercise_type'
+            ]
+            
+            # Add indicator columns in the desired order (same as defined in indicator_groups)
+            indicator_columns = [
+                'ema', 'vwma', 'roc', 'roc_of_roc', 'macd_line', 'macd_signal',
+                'rsi', 'sma', 'volatility', 'atr', 'stoch_rsi_k', 'stoch_rsi_d',
+                'bollinger_upper', 'bollinger_lower', 'bollinger_bands_width'
+            ]
+            
+            # Combine all columns and filter to only those present in ordered_data
+            all_columns = base_columns + indicator_columns
+            available_columns = [col for col in all_columns if col in ordered_data]
+            
+            # Add any remaining columns that might not be in our predefined list
+            remaining_columns = [col for col in ordered_data.keys() if col not in available_columns]
+            final_columns = available_columns + remaining_columns
+            
+            # Create ordered data list matching the column order
+            ordered_values = [ordered_data.get(col, "") for col in final_columns]
+            
+            # Convert to DataFrame with explicit column order
+            df_new = pd.DataFrame([ordered_values], columns=final_columns)
             
             # Check if file exists
             if os.path.exists(csv_file):
@@ -1367,7 +1540,7 @@ class SchwabStreamingClient:
         Kept for backward compatibility and manual cleanup if needed.
         """
         print("ℹ️  Data is already saved in real-time - no batch saving needed")
-        
+                        
         # Clear memory to prevent buildup since data is saved in real-time
         if self.option_recording_data:
             print(f"🧹 Clearing {len(self.option_recording_data)} option recording entries from memory")
