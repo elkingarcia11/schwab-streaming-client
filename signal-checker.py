@@ -35,8 +35,8 @@ class SignalChecker:
                 'momentum_conditions_required': 3    # Need at least 3 momentum conditions (AND logic)
             },
             'sell': {
-                'trend_conditions_required': 2,      # Need at least 2 trend conditions OR
-                'momentum_conditions_required': 2    # Need at least 2 momentum conditions (OR logic)
+                'trend_conditions_required': 1,      # Need at least 1 trend conditions AND
+                'momentum_conditions_required': 2    # Need at least 2 momentum conditions (AND logic)
             }
         }
         
@@ -262,6 +262,66 @@ class SignalChecker:
                 return False
         return True
     
+    def check_indicators_valid_for_buy(self, row: pd.Series) -> Tuple[bool, Dict]:
+        """
+        Enhanced validation for buy signals - ensures all required indicators 
+        have valid numerical values before allowing trades
+        
+        Args:
+            row: Data row with calculated indicators
+            
+        Returns:
+            Tuple of (all_valid, validation_details)
+        """
+        # Required indicators for buy signals
+        required_indicators = ['ema', 'vwma', 'macd_line', 'macd_signal', 
+                             'stoch_rsi_k', 'stoch_rsi_d', 'roc', 'roc_of_roc']
+        
+        validation_details = {
+            'missing_indicators': [],
+            'invalid_values': [],
+            'all_valid': True
+        }
+        
+        for indicator in required_indicators:
+            # Check if indicator exists
+            if indicator not in row:
+                validation_details['missing_indicators'].append(indicator)
+                validation_details['all_valid'] = False
+                continue
+                
+            value = row[indicator]
+            
+            # Check for empty, NaN, or non-numeric values
+            if value == "" or pd.isna(value):
+                validation_details['invalid_values'].append(f"{indicator}: empty/NaN")
+                validation_details['all_valid'] = False
+                continue
+                
+            # Ensure it's a valid number
+            try:
+                float_value = float(value)
+                # Additional checks for specific indicators
+                if indicator in ['stoch_rsi_k', 'stoch_rsi_d']:
+                    # Stochastic RSI should be between 0-100
+                    if float_value < 0 or float_value > 100:
+                        validation_details['invalid_values'].append(f"{indicator}: {float_value} (out of range 0-100)")
+                        validation_details['all_valid'] = False
+                elif indicator == 'ema' and float_value <= 0:
+                    # EMA should be positive for options
+                    validation_details['invalid_values'].append(f"{indicator}: {float_value} (should be positive)")
+                    validation_details['all_valid'] = False
+                elif indicator == 'vwma' and float_value <= 0:
+                    # VWMA should be positive for options
+                    validation_details['invalid_values'].append(f"{indicator}: {float_value} (should be positive)")
+                    validation_details['all_valid'] = False
+                    
+            except (ValueError, TypeError):
+                validation_details['invalid_values'].append(f"{indicator}: {value} (not numeric)")
+                validation_details['all_valid'] = False
+        
+        return validation_details['all_valid'], validation_details
+    
     def check_signal_combos(self, row: pd.Series, signal_type: str) -> Tuple[bool, Dict]:
         """
         Check if signal conditions are met for entry/exit
@@ -342,7 +402,7 @@ class SignalChecker:
                 
             # SELL signal: Uses OR logic - trend conditions OR momentum conditions
             config = self.signal_config['sell']
-            signal_triggered = (trend_conditions_met >= config['trend_conditions_required'] or 
+            signal_triggered = (trend_conditions_met >= config['trend_conditions_required'] and 
                               momentum_conditions_met >= config['momentum_conditions_required'])
             
         else:
@@ -373,6 +433,20 @@ class SignalChecker:
         # Don't enter if trade already open
         if symbol in self.active_trades:
             return False, {'reason': 'trade_already_open'}
+        
+        # Enhanced validation: ensure all indicators have valid values for buy signals
+        indicators_valid, validation_details = self.check_indicators_valid_for_buy(row)
+        if not indicators_valid:
+            if self.debug:
+                print(f"🚫 Invalid indicators for {symbol} - preventing buy signal:")
+                if validation_details['missing_indicators']:
+                    print(f"   Missing: {validation_details['missing_indicators']}")
+                if validation_details['invalid_values']:
+                    print(f"   Invalid: {validation_details['invalid_values']}")
+            return False, {
+                'reason': 'invalid_indicators',
+                'validation_details': validation_details
+            }
         
         # Check for buy signal
         signal_triggered, signal_details = self.check_signal_combos(row, 'buy')
