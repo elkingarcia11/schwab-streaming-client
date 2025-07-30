@@ -52,6 +52,9 @@ signal_checker_module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(signal_checker_module)
 SignalChecker = signal_checker_module.SignalChecker
 
+# Import email manager
+from email_manager import TradingEmailManager
+
 class SchwabStreamingClient:
     """Streaming client for Schwab API - handles both option data and chart data"""
     
@@ -123,6 +126,11 @@ class SchwabStreamingClient:
         # Initialize signal checker for trade signals
         self.signal_checker = SignalChecker(debug=debug)
         
+        # Initialize email manager for trade notifications
+        self.email_manager = TradingEmailManager(debug=debug)
+        # Set default recipients (can be overridden later)
+        self.email_manager.set_recipients(['your-email@example.com'])  # Replace with actual email
+        
         # WebSocket connection
         self.ws: Optional[websocket.WebSocketApp] = None
         self.running = False
@@ -145,6 +153,26 @@ class SchwabStreamingClient:
         self.et_tz = pytz.timezone('US/Eastern')
         self.market_open = datetime.strptime('09:30', '%H:%M').time()
         self.market_close = datetime.strptime('16:00', '%H:%M').time()
+    
+    def set_email_recipients(self, emails: List[str]):
+        """
+        Set email recipients for trade notifications and daily summaries
+        
+        Args:
+            emails: List of email addresses to send notifications to
+        """
+        self.email_manager.set_recipients(emails)
+        if self.debug:
+            print(f"📧 Set email recipients: {emails}")
+    
+    def test_email_connection(self) -> bool:
+        """
+        Test email connection
+        
+        Returns:
+            True if connection successful, False otherwise
+        """
+        return self.email_manager.test_email_connection()
     
     def load_option_symbols_from_gcs(self, bucket_name: str, file_name: str) -> tuple[List[str], Dict[str, int]]:
         """
@@ -478,7 +506,7 @@ class SchwabStreamingClient:
             # Process the row through signal checker
             signal_result = self.signal_checker.process_streaming_row(symbol, row_data)
             
-            # Log trade actions
+            # Log trade actions and send email notifications
             if signal_result.get('action') == 'enter_trade':
                 trade_details = signal_result.get('trade_details', {})
                 base_symbol, contract_type = self.signal_checker.extract_symbol_info(symbol)
@@ -490,6 +518,22 @@ class SchwabStreamingClient:
                     if 'trend_conditions' in signal_details and 'momentum_conditions' in signal_details:
                         print(f"   Trend: {signal_details['trend_conditions']}")
                         print(f"   Momentum: {signal_details['momentum_conditions']}")
+                
+                # Send email notification for trade entry
+                self.email_manager.send_trade_notification(
+                    action="BUY",
+                    symbol=base_symbol,
+                    contract_type=contract_type,
+                    price=trade_details.get('entry_price', 0),
+                    additional_info={
+                        'full_symbol': symbol,
+                        'entry_time': trade_details.get('entry_timestamp', ''),
+                        'trend_conditions': signal_details.get('trend_conditions', []),
+                        'momentum_conditions': signal_details.get('momentum_conditions', []),
+                        'trend_conditions_met': signal_details.get('trend_conditions_met', 0),
+                        'momentum_conditions_met': signal_details.get('momentum_conditions_met', 0)
+                    }
+                )
                     
             elif signal_result.get('action') == 'exit_trade':
                 trade_details = signal_result.get('trade_details', {})
@@ -510,6 +554,35 @@ class SchwabStreamingClient:
                         print(f"📊 Trade Summary: {summary['total_trades']} trades, "
                               f"{summary['win_rate']:.1f}% win rate, "
                               f"${summary['total_profit']:.2f} total P&L")
+                
+                # Send email notification for trade exit
+                additional_info = {
+                    'full_symbol': symbol,
+                    'entry_price': trade_details.get('entry_price', 0),
+                    'profit': f"${trade_details.get('profit', 0):.4f}",
+                    'profit_pct': f"{trade_details.get('profit_pct', 0):.2f}%",
+                    'exit_reason': trade_details.get('exit_reason', 'unknown'),
+                    'duration': trade_details.get('duration_minutes', 0)
+                }
+                
+                # Add exit signal details if available
+                exit_details = trade_details.get('exit_details', {})
+                if exit_details and 'signal_details' in exit_details:
+                    signal_details = exit_details['signal_details']
+                    additional_info.update({
+                        'exit_trend_conditions_met': signal_details.get('trend_conditions_met', 'N/A'),
+                        'exit_momentum_conditions_met': signal_details.get('momentum_conditions_met', 'N/A'),
+                        'exit_trend_conditions': signal_details.get('trend_conditions', []),
+                        'exit_momentum_conditions': signal_details.get('momentum_conditions', [])
+                    })
+                
+                self.email_manager.send_trade_notification(
+                    action="SELL",
+                    symbol=base_symbol,
+                    contract_type=contract_type,
+                    price=trade_details.get('exit_price', 0),
+                    additional_info=additional_info
+                )
                         
             elif signal_result.get('action') == 'holding':
                 if self.debug and 'unrealized_pnl' in signal_result:
@@ -1332,7 +1405,7 @@ class SchwabStreamingClient:
                     ['ema', 'vwma'],
                     # Group 2: Rate of Change (ROC and ROC of ROC together)  
                     ['roc', 'roc_of_roc'],
-                    # Group 3: MACD (line, signal, histogram together)
+                    # Group 3: MACD (line, signal together)
                     ['macd_line', 'macd_signal'],
                     # Group 4: Other single indicators
                     ['rsi', 'sma', 'volatility', 'atr'],
@@ -1761,6 +1834,17 @@ if __name__ == "__main__":
     # Auto-setup option streaming (uses DTE mapping from GCS if available)
     client.auto_setup_option_streaming()
     
+    # Configure email notifications
+    email_recipients = os.getenv('EMAIL_RECIPIENTS', 'your-email@example.com').split(',')
+    client.set_email_recipients(email_recipients)
+    
+    # Test email connection
+    print("📧 Testing email connection...")
+    if client.test_email_connection():
+        print("✅ Email connection successful")
+    else:
+        print("⚠️ Email connection failed - notifications will be disabled")
+    
     try:
         # Check if it's before market hours and wait until 9:30 AM if needed
         if not client.wait_for_market_open():
@@ -1775,6 +1859,9 @@ if __name__ == "__main__":
         print("🔄 Starting market hours monitoring loop...")
         last_save_time = time.time()
         
+        # Reset daily summary flag at market open
+        client.email_manager.reset_daily_summary_flag()
+        
         while client.is_market_open():
             time.sleep(1)
             
@@ -1783,6 +1870,9 @@ if __name__ == "__main__":
                 print("⚠️ Connection lost. Attempting to reconnect...")
                 client.connect()
                 continue
+            
+            # Check for daily summary (after market close)
+            client.email_manager.check_and_send_daily_summary()
             
             # Print data summary every 5 minutes (data is saved in real-time)
             if time.time() - last_save_time >= 300:  # 5 minutes
@@ -1794,6 +1884,9 @@ if __name__ == "__main__":
                 print(f"📊 Data Summary: {summary}")
         
         print("🏁 Market hours ended. Shutting down...")
+        
+        # Send final daily summary if not already sent
+        client.email_manager.send_daily_summary()
             
     except KeyboardInterrupt:
         print("\n👋 Shutting down...")

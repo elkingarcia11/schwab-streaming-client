@@ -32,7 +32,7 @@ A comprehensive Python client for streaming market data from Charles Schwab's We
 - **Symbol-Specific Configuration**: Customizable indicator periods via `indicator_periods.json`
 - **Comprehensive Indicator Suite**:
   - **Momentum**: RSI, Stochastic RSI, ROC, ROC of ROC
-  - **Trend**: MACD (line, signal, histogram), EMA, SMA, VWMA
+  - **Trend**: MACD (line, signal), EMA, SMA, VWMA
   - **Volatility**: Bollinger Bands, ATR, Volatility, Price Change
 
 ### 🔍 **Symbol Management**
@@ -55,6 +55,16 @@ A comprehensive Python client for streaming market data from Charles Schwab's We
 - **Indicator Periods Configuration**: `indicator_periods.json` for symbol/timeframe-specific settings
 - **Debug Mode**: Comprehensive logging for development and troubleshooting
 - **Data Summaries**: Real-time statistics on streaming, recording, and aggregated data
+
+### 📧 **Email Notifications**
+
+- **Trade Notifications**: Instant email alerts for trade entries and exits
+- **Daily Summaries**: End-of-day trading reports with performance metrics
+- **CSV Attachments**: Detailed trade data attached to daily summaries
+- **Configurable Recipients**: Multiple email addresses for notifications
+- **Configurable Sender**: Custom sender name via `SENDER_NAME` environment variable
+- **Secure SMTP**: TLS encryption with support for Gmail, Outlook, Yahoo
+- **Subject Format**: "BUY/SELL SYMBOL C/P" for quick identification
 
 ## 🏗️ **Architecture**
 
@@ -119,7 +129,27 @@ schwab-streaming-client/
    GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account-key.json
    ```
 
-4. **Configure indicators:**
+4. **Configure email notifications (optional):**
+   Copy `email.env.example` to `.env` and add your email credentials:
+
+   ```env
+   EMAIL_ADDRESS=your-email@gmail.com
+   EMAIL_PASSWORD=your-app-password
+   SENDER_EMAIL=trading-bot@yourdomain.com
+   SENDER_NAME=Your Trading Bot Name
+   SMTP_SERVER=smtp.gmail.com
+   SMTP_PORT=587
+   EMAIL_RECIPIENTS=your-email@example.com,another-email@example.com
+   ```
+
+   **Note**:
+
+   - For Gmail, you'll need to use an App Password instead of your regular password
+   - `EMAIL_ADDRESS` is used for SMTP authentication
+   - `SENDER_EMAIL` is the "from" email address (optional - defaults to EMAIL_ADDRESS)
+   - `SENDER_NAME` is the "from" name (optional - defaults to SENDER_EMAIL)
+
+5. **Configure indicators:**
    Create or modify `indicator_periods.json`:
 
    ```json
@@ -142,12 +172,38 @@ schwab-streaming-client/
    }
    ```
 
-5. **Run the client:**
+6. **Test email functionality (optional):**
+
+   ```bash
+   python test_email.py
+   ```
+
+7. **Run the client:**
    ```bash
    python schwab-streaming-client.py
    ```
 
 ## ⚙️ **Configuration**
+
+### **Email Configuration**
+
+The email notifications can be configured via environment variables in your `.env` file:
+
+| Variable           | Description                      | Example                                 |
+| ------------------ | -------------------------------- | --------------------------------------- |
+| `EMAIL_ADDRESS`    | SMTP authentication email        | `your-email@gmail.com`                  |
+| `EMAIL_PASSWORD`   | SMTP password or app password    | `your-app-password`                     |
+| `SENDER_EMAIL`     | "From" email address (optional)  | `trading-bot@yourdomain.com`            |
+| `SENDER_NAME`      | "From" name (optional)           | `Schwab Trading Bot`                    |
+| `SMTP_SERVER`      | SMTP server address              | `smtp.gmail.com`                        |
+| `SMTP_PORT`        | SMTP server port                 | `587`                                   |
+| `EMAIL_RECIPIENTS` | Comma-separated recipient emails | `email1@example.com,email2@example.com` |
+
+**Common SMTP Settings:**
+
+- **Gmail**: `smtp.gmail.com:587` (requires App Password)
+- **Outlook**: `smtp-mail.outlook.com:587`
+- **Yahoo**: `smtp.mail.yahoo.com:587`
 
 ### **Indicator Periods Configuration**
 

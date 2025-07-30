@@ -11,3 +11,6 @@ google-cloud-storage
 
 # Testing dependencies
 pytest
+
+# Email client dependencies
+python-dotenv

@@ -7,3 +7,6 @@
 [submodule "indicator-calculator"]
 	path = indicator-calculator
 	url = https://github.com/elkingarcia11/indicator-calculator.git
+[submodule "email-client"]
+	path = email-client
+	url = https://github.com/elkingarcia11/email-client.git
