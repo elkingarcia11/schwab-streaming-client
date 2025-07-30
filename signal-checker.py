@@ -35,8 +35,8 @@ class SignalChecker:
                 'momentum_conditions_required': 3    # Need at least 3 momentum conditions (AND logic)
             },
             'sell': {
-                'trend_conditions_required': 1,      # Need at least 1 trend conditions AND
-                'momentum_conditions_required': 2    # Need at least 2 momentum conditions (AND logic)
+                'trend_conditions_required': 2,      # Need at least 2 trend conditions OR
+                'momentum_conditions_required': 2    # Need at least 2 momentum conditions (OR logic)
             }
         }
         
@@ -67,6 +67,34 @@ class SignalChecker:
             return base_symbol, 'C'  # Default to Call if not found
         return symbol, 'C'
     
+    def extract_strike_price(self, symbol: str) -> float:
+        """
+        Extract strike price from option symbol
+        
+        Args:
+            symbol: Option symbol like "SPY   250801P00635000"
+            
+        Returns:
+            Strike price as float (e.g., 635.00)
+        """
+        try:
+            # Remove spaces and find contract type position
+            clean_symbol = symbol.replace(' ', '')
+            
+            # Find contract type (C or P)
+            for i, char in enumerate(clean_symbol[6:], 6):  # Skip date part
+                if char in ['C', 'P']:
+                    # Strike price is the 8 digits after C/P, representing cents
+                    strike_str = clean_symbol[i+1:i+9]
+                    if len(strike_str) == 8 and strike_str.isdigit():
+                        # Convert from cents to dollars
+                        return float(strike_str) / 1000
+                    break
+            
+            return 0.0  # Default if parsing fails
+        except Exception:
+            return 0.0
+    
     def log_trade_open(self, trade_info: Dict):
         """
         Log trade opening to data/trades/open.csv
@@ -80,7 +108,7 @@ class SignalChecker:
             
             # Define explicit column order for consistency
             columns = [
-                'timestamp', 'symbol', 'contract_type', 'full_symbol', 'entry_price',
+                'timestamp', 'symbol', 'contract_type', 'full_symbol', 'strike_price', 'entry_price',
                 'signal_type', 'trend_conditions', 'momentum_conditions',
                 'trend_conditions_met', 'momentum_conditions_met'
             ]
@@ -91,6 +119,7 @@ class SignalChecker:
                 base_symbol,
                 contract_type,
                 trade_info['symbol'],
+                self.extract_strike_price(trade_info['symbol']),
                 trade_info['entry_price'],
                 trade_info.get('signal_details', {}).get('signal_type', 'buy'),
                 ','.join(trade_info.get('signal_details', {}).get('trend_conditions', [])),
@@ -136,7 +165,7 @@ class SignalChecker:
             
             # Define explicit column order for consistency
             columns = [
-                'timestamp', 'symbol', 'contract_type', 'full_symbol', 'entry_price', 'exit_price',
+                'timestamp', 'symbol', 'contract_type', 'full_symbol', 'strike_price', 'entry_price', 'exit_price',
                 'profit', 'profit_pct', 'duration_minutes', 'exit_reason', 'max_unrealized_profit',
                 'max_drawdown', 'entry_signal', 'entry_trend_conditions', 'entry_momentum_conditions',
                 'exit_signal_type', 'exit_trend_conditions', 'exit_momentum_conditions',
@@ -153,6 +182,7 @@ class SignalChecker:
                 base_symbol,
                 contract_type,
                 completed_trade['symbol'],
+                self.extract_strike_price(completed_trade['symbol']),
                 completed_trade['entry_price'],
                 completed_trade['exit_price'],
                 completed_trade['profit'],
@@ -402,7 +432,7 @@ class SignalChecker:
                 
             # SELL signal: Uses OR logic - trend conditions OR momentum conditions
             config = self.signal_config['sell']
-            signal_triggered = (trend_conditions_met >= config['trend_conditions_required'] and 
+            signal_triggered = (trend_conditions_met >= config['trend_conditions_required'] or 
                               momentum_conditions_met >= config['momentum_conditions_required'])
             
         else:

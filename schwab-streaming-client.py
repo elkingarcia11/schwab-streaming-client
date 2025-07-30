@@ -1651,17 +1651,54 @@ class SchwabStreamingClient:
                     
                     if symbol in symbol_option_symbols:
                         all_option_symbols[symbol] = symbol_option_symbols[symbol]
+                    
+                    # Also generate symbols for DTE-1 if DTE > 0
+                    if dte > 0:
+                        dte_minus_one = dte - 1
+                        print(f"📅 Also generating options for {symbol} with {dte_minus_one} DTE (DTE-1)")
+                        
+                        symbol_option_symbols_minus_one = self.symbol_finder.get_option_symbols_for_multiple_symbols(
+                            [symbol], dte_minus_one
+                        )
+                        
+                        if symbol in symbol_option_symbols_minus_one:
+                            # Merge the DTE-1 symbols with existing symbols
+                            if symbol in all_option_symbols:
+                                all_option_symbols[symbol]['calls'].extend(symbol_option_symbols_minus_one[symbol]['calls'])
+                                all_option_symbols[symbol]['puts'].extend(symbol_option_symbols_minus_one[symbol]['puts'])
+                            else:
+                                all_option_symbols[symbol] = symbol_option_symbols_minus_one[symbol]
             else:
                 # Use the specified DTE for all symbols
                 all_option_symbols = self.symbol_finder.get_option_symbols_for_multiple_symbols(
                     self.equity_symbols_for_options, days_to_expiration
                 )
+                
+                # Also generate symbols for DTE-1 if DTE > 0
+                if days_to_expiration > 0:
+                    dte_minus_one = days_to_expiration - 1
+                    print(f"📅 Also generating options for all symbols with {dte_minus_one} DTE (DTE-1)")
+                    
+                    all_option_symbols_minus_one = self.symbol_finder.get_option_symbols_for_multiple_symbols(
+                        self.equity_symbols_for_options, dte_minus_one
+                    )
+                    
+                    # Merge the DTE-1 symbols with existing symbols
+                    for symbol, option_data in all_option_symbols_minus_one.items():
+                        if symbol in all_option_symbols:
+                            all_option_symbols[symbol]['calls'].extend(option_data['calls'])
+                            all_option_symbols[symbol]['puts'].extend(option_data['puts'])
+                        else:
+                            all_option_symbols[symbol] = option_data
             
-            # Flatten the option symbols into a single list
+            # Flatten the option symbols into a single list and remove duplicates
             option_symbols = []
             for symbol, option_data in all_option_symbols.items():
                 option_symbols.extend(option_data['calls'])
                 option_symbols.extend(option_data['puts'])
+            
+            # Remove duplicates while preserving order
+            option_symbols = list(dict.fromkeys(option_symbols))
             
             print(f"✅ Generated {len(option_symbols)} option symbols")
             if self.debug:
