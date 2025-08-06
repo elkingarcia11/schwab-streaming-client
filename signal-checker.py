@@ -22,21 +22,32 @@ class SignalChecker:
         
         # Trade tracking per symbol
         self.trades: Dict[str, List[Dict]] = {}  # symbol -> list of completed trades
-        self.active_trades: Dict[str, Dict] = {}  # symbol -> active trade info
+        self.active_trades: Dict[str, Dict[str, Dict]] = {}  # symbol -> contract_type -> active trade info
         
         # Trade configuration
         self.trailing_stop_pct = 0.9  # 10% trailing stop
         self.stop_loss_pct = 0.95     # 5% stop loss
         
+        # Trading restrictions configuration
+        self.trading_restrictions = {
+            'target_dte': 1,  # Only trade options with exactly this DTE (x-1 if tracking x and x-1)
+            'max_trades_per_symbol': {'C': 1, 'P': 1},  # Max 1 call + 1 put per base symbol
+            'require_closest_strike': True,  # Only trade the strike closest to underlying price
+            'max_strike_distance': 0.05  # Maximum allowed distance from underlying (5% safety net)
+        }
+        
+        # Dynamic ITM strike tracking per base symbol and contract type
+        self.current_itm_strikes = {}  # base_symbol -> {'C': strike_below_price, 'P': strike_above_price}
+        
         # Signal configuration
         self.signal_config = {
             'buy': {
                 'trend_conditions_required': 2,      # Need at least 2 trend conditions AND
-                'momentum_conditions_required': 3    # Need at least 3 momentum conditions (AND logic)
+                'momentum_conditions_required': 2    # Need at least 2 momentum conditions (AND logic)
             },
             'sell': {
-                'trend_conditions_required': 2,      # Need at least 2 trend conditions OR
-                'momentum_conditions_required': 2    # Need at least 2 momentum conditions (OR logic)
+                'trend_conditions_required': 10,      # Never sell on technical signals (max possible: 2)
+                'momentum_conditions_required': 10    # Never sell on technical signals (max possible: 2)
             }
         }
         
@@ -44,56 +55,15 @@ class SignalChecker:
             print("🎯 SignalChecker initialized")
             print(f"   Trailing stop: {(1-self.trailing_stop_pct)*100:.1f}%")
             print(f"   Stop loss: {(1-self.stop_loss_pct)*100:.1f}%")
+            print(f"   Trading restrictions:")
+            print(f"     - Target DTE: {self.trading_restrictions['target_dte']}")
+            print(f"     - Max trades per symbol: {self.trading_restrictions['max_trades_per_symbol']}")
+            print(f"     - Require closest strike: {self.trading_restrictions['require_closest_strike']}")
+            print(f"     - Max strike distance: {self.trading_restrictions['max_strike_distance']:.1%}")
         
         # Ensure trades directory exists
         os.makedirs('data/trades', exist_ok=True)
-    
-    def extract_symbol_info(self, symbol: str) -> Tuple[str, str]:
-        """
-        Extract base symbol and contract type from option symbol
-        
-        Args:
-            symbol: Option symbol like "QQQ250731C00567000"
-            
-        Returns:
-            Tuple of (base_symbol, contract_type) like ("QQQ", "C")
-        """
-        if len(symbol) > 5:
-            base_symbol = symbol[:3]  # First 3 characters (QQQ, SPY)
-            # Find contract type (C or P) - usually around position 9-12
-            for i, char in enumerate(symbol[6:]):  # Skip date part
-                if char in ['C', 'P']:
-                    return base_symbol, char
-            return base_symbol, 'C'  # Default to Call if not found
-        return symbol, 'C'
-    
-    def extract_strike_price(self, symbol: str) -> float:
-        """
-        Extract strike price from option symbol
-        
-        Args:
-            symbol: Option symbol like "SPY   250801P00635000"
-            
-        Returns:
-            Strike price as float (e.g., 635.00)
-        """
-        try:
-            # Remove spaces and find contract type position
-            clean_symbol = symbol.replace(' ', '')
-            
-            # Find contract type (C or P)
-            for i, char in enumerate(clean_symbol[6:], 6):  # Skip date part
-                if char in ['C', 'P']:
-                    # Strike price is the 8 digits after C/P, representing cents
-                    strike_str = clean_symbol[i+1:i+9]
-                    if len(strike_str) == 8 and strike_str.isdigit():
-                        # Convert from cents to dollars
-                        return float(strike_str) / 1000
-                    break
-            
-            return 0.0  # Default if parsing fails
-        except Exception:
-            return 0.0
+
     
     def log_trade_open(self, trade_info: Dict):
         """
@@ -103,29 +73,26 @@ class SignalChecker:
             trade_info: Trade information dictionary
         """
         try:
-            csv_file = 'data/trades/open.csv'
-            base_symbol, contract_type = self.extract_symbol_info(trade_info['symbol'])
-            
-            # Define explicit column order for consistency
+            csv_file = 'data/trades/open.csv'   
+            # Define explicit column order for consistency (using symbol+contract_type+strike_price format)
             columns = [
-                'timestamp', 'symbol', 'contract_type', 'full_symbol', 'strike_price', 'entry_price',
+                'timestamp', 'symbol', 'contract_type', 'strike_price', 'entry_price',
                 'signal_type', 'trend_conditions', 'momentum_conditions',
                 'trend_conditions_met', 'momentum_conditions_met'
             ]
             
-            # Prepare trade data for CSV in exact column order
+            # Prepare trade data for CSV in exact column order (no full_symbol, clean format)
             trade_data = [
                 trade_info.get('entry_timestamp', datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
-                base_symbol,
-                contract_type,
                 trade_info['symbol'],
-                self.extract_strike_price(trade_info['symbol']),
+                trade_info['contract_type'],
+                trade_info['strike_price'],
                 trade_info['entry_price'],
-                trade_info.get('signal_details', {}).get('signal_type', 'buy'),
-                ','.join(trade_info.get('signal_details', {}).get('trend_conditions', [])),
-                ','.join(trade_info.get('signal_details', {}).get('momentum_conditions', [])),
-                trade_info.get('signal_details', {}).get('trend_conditions_met', 0),
-                trade_info.get('signal_details', {}).get('momentum_conditions_met', 0)
+                trade_info.get('signal_type', 'buy'),
+                trade_info.get('trend_conditions', []),
+                trade_info.get('momentum_conditions', []),
+                trade_info.get('trend_conditions_met', 0),
+                trade_info.get('momentum_conditions_met', 0)
             ]
             
             # Convert to DataFrame with explicit column order
@@ -153,7 +120,6 @@ class SignalChecker:
         """
         try:
             csv_file = 'data/trades/close.csv'
-            base_symbol, contract_type = self.extract_symbol_info(completed_trade['symbol'])
             
             # Calculate trade duration in minutes
             try:
@@ -163,26 +129,24 @@ class SignalChecker:
             except:
                 duration_minutes = 0
             
-            # Define explicit column order for consistency
+            # Define explicit column order for consistency (using symbol+contract_type+strike_price format)
             columns = [
-                'timestamp', 'symbol', 'contract_type', 'full_symbol', 'strike_price', 'entry_price', 'exit_price',
+                'symbol', 'contract_type', 'strike_price', 'entry_price', 'exit_price',
                 'profit', 'profit_pct', 'duration_minutes', 'exit_reason', 'max_unrealized_profit',
-                'max_drawdown', 'entry_signal', 'entry_trend_conditions', 'entry_momentum_conditions',
-                'exit_signal_type', 'exit_trend_conditions', 'exit_momentum_conditions',
-                'exit_trend_conditions_met', 'exit_momentum_conditions_met'
+                'max_drawdown', 'entry_timestamp', 'exit_timestamp',
+                'entry_ema', 'entry_vwma', 'entry_macd_line', 'entry_macd_signal', 'entry_stoch_k', 'entry_stoch_d','entry_roc','entry_roc_of_roc',
+                'exit_ema', 'exit_vwma', 'exit_macd_line', 'exit_macd_signal', 'exit_stoch_k', 'exit_stoch_d','exit_roc','exit_roc_of_roc'
             ]
             
-            # Extract exit signal details if exit was due to sell signal
-            exit_details = completed_trade.get('exit_details', {})
-            exit_signal_details = exit_details.get('signal_details', {}) if completed_trade['exit_reason'] == 'sell_signal' else {}
+            # Extract indicator values from entry and exit data
+            entry_indicators = completed_trade.get('entry_indicators', {})
+            exit_indicators = completed_trade.get('exit_indicators', {})
             
-            # Prepare trade data for CSV in exact column order
+            # Prepare trade data for CSV in exact column order (no full_symbol, clean format)
             trade_data = [
-                completed_trade.get('exit_timestamp', datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
-                base_symbol,
-                contract_type,
                 completed_trade['symbol'],
-                self.extract_strike_price(completed_trade['symbol']),
+                completed_trade['contract_type'],
+                completed_trade['strike_price'],
                 completed_trade['entry_price'],
                 completed_trade['exit_price'],
                 completed_trade['profit'],
@@ -191,14 +155,24 @@ class SignalChecker:
                 completed_trade['exit_reason'],
                 completed_trade['max_unrealized_profit'],
                 completed_trade['max_drawdown'],
-                completed_trade.get('entry_signal', {}).get('signal_type', 'buy'),
-                ','.join(completed_trade.get('entry_signal', {}).get('trend_conditions', [])),
-                ','.join(completed_trade.get('entry_signal', {}).get('momentum_conditions', [])),
-                exit_signal_details.get('signal_type', '') if exit_signal_details else '',
-                ','.join(exit_signal_details.get('trend_conditions', [])) if exit_signal_details else '',
-                ','.join(exit_signal_details.get('momentum_conditions', [])) if exit_signal_details else '',
-                exit_signal_details.get('trend_conditions_met', '') if exit_signal_details else '',
-                exit_signal_details.get('momentum_conditions_met', '') if exit_signal_details else ''
+                completed_trade.get('entry_timestamp', datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                completed_trade.get('exit_timestamp', datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                entry_indicators.get('entry_ema', 0),
+                entry_indicators.get('entry_vwma', 0),
+                entry_indicators.get('entry_macd_line', 0),
+                entry_indicators.get('entry_macd_signal', 0),
+                entry_indicators.get('entry_stoch_k', 0),
+                entry_indicators.get('entry_stoch_d', 0),
+                entry_indicators.get('entry_roc', 0),
+                entry_indicators.get('entry_roc_of_roc', 0),
+                exit_indicators.get('exit_ema', 0),
+                exit_indicators.get('exit_vwma', 0),
+                exit_indicators.get('exit_macd_line', 0),
+                exit_indicators.get('exit_macd_signal', 0),
+                exit_indicators.get('exit_stoch_k', 0),
+                exit_indicators.get('exit_stoch_d', 0),
+                exit_indicators.get('exit_roc', 0),
+                exit_indicators.get('exit_roc_of_roc', 0)
             ]
             
             # Convert to DataFrame with explicit column order
@@ -217,9 +191,9 @@ class SignalChecker:
             if self.debug:
                 print(f"❌ Error logging trade close: {e}")
     
-    def remove_from_open_trades_csv(self, symbol: str):
+    def remove_from_open_trades_csv(self, symbol: str, contract_type: str, strike_price: float):
         """
-        Remove a closed trade from the open trades CSV file
+        Remove a closed trade from the open trades CSV file using symbol+contract_type+strike_price
         
         Args:
             symbol: Option symbol to remove from open trades
@@ -232,30 +206,29 @@ class SignalChecker:
                 if self.debug:
                     print(f"📝 Open trades CSV not found: {csv_file}")
                 return
+        
+            # Read existing open trades with error handling for malformed CSV
+            try:
+                df = pd.read_csv(csv_file)
+            except pd.errors.ParserError:
+                if self.debug:
+                    print(f"⚠️ Malformed CSV detected, attempting manual fix...")
+                self._fix_malformed_open_csv(csv_file)
+                df = pd.read_csv(csv_file)
             
-            # Read existing open trades
-            df = pd.read_csv(csv_file)
             
-            # Remove the row with matching full_symbol
-            initial_count = len(df)
-            df = df[df['full_symbol'] != symbol]
-            final_count = len(df)
+            # Use symbol + contract_type + strike_price for exact matching
+            mask = (df['symbol'] == symbol) & \
+                   (df['contract_type'] == contract_type) & \
+                   (df['strike_price'] == strike_price)
+            df = df[~mask]
+            
             
             # Write back to CSV
             if len(df) > 0:
-                df.to_csv(csv_file, index=False)
-            else:
-                # If no trades left, create empty file with headers
-                columns = [
-                    'timestamp', 'symbol', 'contract_type', 'full_symbol', 'entry_price',
-                    'signal_type', 'trend_conditions', 'momentum_conditions',
-                    'trend_conditions_met', 'momentum_conditions_met'
-                ]
-                empty_df = pd.DataFrame(columns=columns)
-                empty_df.to_csv(csv_file, index=False)
-            
-            if self.debug and initial_count != final_count:
-                print(f"🗑️ Removed {symbol} from open trades CSV ({initial_count} -> {final_count} trades)")
+                df.to_csv(csv_file, index=False)        
+            if self.debug:
+                print(f"🗑️ Removed {symbol} {contract_type} {strike_price} from open trades CSV")
                 
         except Exception as e:
             if self.debug:
@@ -292,66 +265,6 @@ class SignalChecker:
                 return False
         return True
     
-    def check_indicators_valid_for_buy(self, row: pd.Series) -> Tuple[bool, Dict]:
-        """
-        Enhanced validation for buy signals - ensures all required indicators 
-        have valid numerical values before allowing trades
-        
-        Args:
-            row: Data row with calculated indicators
-            
-        Returns:
-            Tuple of (all_valid, validation_details)
-        """
-        # Required indicators for buy signals
-        required_indicators = ['ema', 'vwma', 'macd_line', 'macd_signal', 
-                             'stoch_rsi_k', 'stoch_rsi_d', 'roc', 'roc_of_roc']
-        
-        validation_details = {
-            'missing_indicators': [],
-            'invalid_values': [],
-            'all_valid': True
-        }
-        
-        for indicator in required_indicators:
-            # Check if indicator exists
-            if indicator not in row:
-                validation_details['missing_indicators'].append(indicator)
-                validation_details['all_valid'] = False
-                continue
-                
-            value = row[indicator]
-            
-            # Check for empty, NaN, or non-numeric values
-            if value == "" or pd.isna(value):
-                validation_details['invalid_values'].append(f"{indicator}: empty/NaN")
-                validation_details['all_valid'] = False
-                continue
-                
-            # Ensure it's a valid number
-            try:
-                float_value = float(value)
-                # Additional checks for specific indicators
-                if indicator in ['stoch_rsi_k', 'stoch_rsi_d']:
-                    # Stochastic RSI should be between 0-100
-                    if float_value < 0 or float_value > 100:
-                        validation_details['invalid_values'].append(f"{indicator}: {float_value} (out of range 0-100)")
-                        validation_details['all_valid'] = False
-                elif indicator == 'ema' and float_value <= 0:
-                    # EMA should be positive for options
-                    validation_details['invalid_values'].append(f"{indicator}: {float_value} (should be positive)")
-                    validation_details['all_valid'] = False
-                elif indicator == 'vwma' and float_value <= 0:
-                    # VWMA should be positive for options
-                    validation_details['invalid_values'].append(f"{indicator}: {float_value} (should be positive)")
-                    validation_details['all_valid'] = False
-                    
-            except (ValueError, TypeError):
-                validation_details['invalid_values'].append(f"{indicator}: {value} (not numeric)")
-                validation_details['all_valid'] = False
-        
-        return validation_details['all_valid'], validation_details
-    
     def check_signal_combos(self, row: pd.Series, signal_type: str) -> Tuple[bool, Dict]:
         """
         Check if signal conditions are met for entry/exit
@@ -361,7 +274,7 @@ class SignalChecker:
             signal_type: 'buy' or 'sell'
             
         Returns:
-            Tuple of (signal_triggered, signal_details)
+            Tuple of (signal_triggered)
         """
         
         # Required indicators for signal analysis
@@ -377,78 +290,41 @@ class SignalChecker:
         
         trend_conditions_met = 0
         momentum_conditions_met = 0
-        signal_details = {'trend_conditions': [], 'momentum_conditions': []}
         
         if signal_type == 'buy':
-            # Trend conditions for BUY
-            if row['ema'] > row['vwma']:
-                trend_conditions_met += 1
-                signal_details['trend_conditions'].append('ema_above_vwma')
-                
-            if row['macd_line'] > row['macd_signal']:
-                trend_conditions_met += 1
-                signal_details['trend_conditions'].append('macd_bullish')
-            
-            # Momentum conditions for BUY
+            if row['roc'] > 0 and row['roc_of_roc'] > 0:
+                momentum_conditions_met += 1
+
             if row['stoch_rsi_k'] > row['stoch_rsi_d']:
                 momentum_conditions_met += 1
-                signal_details['momentum_conditions'].append('stoch_rsi_bullish')
+
+            if row['macd_line'] > row['macd_signal']:
+                trend_conditions_met += 1
                 
-            if row['roc'] > 0:
-                momentum_conditions_met += 1
-                signal_details['momentum_conditions'].append('roc_positive')
+            if row['ema'] > row['vwma']:
+                trend_conditions_met += 1
                 
-            if row['roc_of_roc'] > 0:
-                momentum_conditions_met += 1
-                signal_details['momentum_conditions'].append('roc_of_roc_positive')
             
-            # BUY signal: Need both trend AND momentum conditions (AND logic)
             config = self.signal_config['buy']
-            signal_triggered = (trend_conditions_met >= config['trend_conditions_required'] and 
-                              momentum_conditions_met >= config['momentum_conditions_required'])
-            
         elif signal_type == 'sell':
-            # Trend conditions for SELL
-            if row['ema'] < row['vwma']:
-                trend_conditions_met += 1
-                signal_details['trend_conditions'].append('ema_below_vwma')
-                    
-            if row['macd_line'] < row['macd_signal']:
-                trend_conditions_met += 1
-                signal_details['trend_conditions'].append('macd_bearish')
-                
-            # Momentum conditions for SELL
+            # SELL signals use opposite conditions of BUY signals
+            if row['roc'] < 0 and row['roc_of_roc'] < 0:
+                momentum_conditions_met += 1
+
             if row['stoch_rsi_k'] < row['stoch_rsi_d']:
                 momentum_conditions_met += 1
-                signal_details['momentum_conditions'].append('stoch_rsi_bearish')
-                    
-            if row['roc'] < 0:
-                momentum_conditions_met += 1
-                signal_details['momentum_conditions'].append('roc_negative')
-                    
-            if row['roc_of_roc'] < 0:
-                momentum_conditions_met += 1
-                signal_details['momentum_conditions'].append('roc_of_roc_negative')
+
+            if row['macd_line'] < row['macd_signal']:
+                trend_conditions_met += 1
                 
-            # SELL signal: Uses OR logic - trend conditions OR momentum conditions
-            config = self.signal_config['sell']
-            signal_triggered = (trend_conditions_met >= config['trend_conditions_required'] or 
-                              momentum_conditions_met >= config['momentum_conditions_required'])
+            if row['ema'] < row['vwma']:
+                trend_conditions_met += 1
             
-        else:
-            return False, {'reason': 'invalid_signal_type'}
+            config = self.signal_config['sell']
         
-        signal_details.update({
-            'signal_type': signal_type,
-            'trend_conditions_met': trend_conditions_met,
-            'momentum_conditions_met': momentum_conditions_met,
-            'trend_required': self.signal_config[signal_type]['trend_conditions_required'],
-            'momentum_required': self.signal_config[signal_type]['momentum_conditions_required'],
-            'signal_triggered': signal_triggered
-        })
-        
-        return signal_triggered, signal_details
-    
+        return (trend_conditions_met >= config['trend_conditions_required'] and 
+                    momentum_conditions_met >= config['momentum_conditions_required'])
+
     def should_enter_trade(self, symbol: str, row: pd.Series) -> Tuple[bool, Dict]:
         """
         Determine if we should enter a trade for this symbol
@@ -458,35 +334,19 @@ class SignalChecker:
             row: Current data row with indicators
             
         Returns:
-            Tuple of (should_enter, signal_details)
+            Tuple of (should_enter)
         """
         # Don't enter if trade already open
-        if symbol in self.active_trades:
+        if symbol in self.active_trades and row['contract_type'] in self.active_trades[symbol]:
             return False, {'reason': 'trade_already_open'}
         
-        # Enhanced validation: ensure all indicators have valid values for buy signals
-        indicators_valid, validation_details = self.check_indicators_valid_for_buy(row)
-        if not indicators_valid:
-            if self.debug:
-                print(f"🚫 Invalid indicators for {symbol} - preventing buy signal:")
-                if validation_details['missing_indicators']:
-                    print(f"   Missing: {validation_details['missing_indicators']}")
-                if validation_details['invalid_values']:
-                    print(f"   Invalid: {validation_details['invalid_values']}")
-            return False, {
-                'reason': 'invalid_indicators',
-                'validation_details': validation_details
-            }
-        
         # Check for buy signal
-        signal_triggered, signal_details = self.check_signal_combos(row, 'buy')
+        signal_triggered = self.check_signal_combos(row, 'buy')
         
         if signal_triggered and self.debug:
-            print(f"🟢 BUY signal for {symbol}:")
-            print(f"   Trend: {signal_details['trend_conditions_met']}/{signal_details['trend_required']} - {signal_details['trend_conditions']}")
-            print(f"   Momentum: {signal_details['momentum_conditions_met']}/{signal_details['momentum_required']} - {signal_details['momentum_conditions']}")
+            print(f"🟢 BUY signal for {symbol} {row['contract_type']} {row['strike_price']}")
         
-        return signal_triggered, signal_details
+        return signal_triggered
     
     def should_exit_trade(self, symbol: str, row: pd.Series) -> Tuple[bool, Dict]:
         """
@@ -500,11 +360,11 @@ class SignalChecker:
             Tuple of (should_exit, exit_details)
         """
         # No active trade to exit
-        if symbol not in self.active_trades:
+        if symbol not in self.active_trades or row['contract_type'] not in self.active_trades[symbol]:
             return False, {'reason': 'no_active_trade'}
         
-        active_trade = self.active_trades[symbol]
-        current_price = row['last_price']
+        active_trade = self.active_trades[symbol][row['contract_type']]
+        current_price = row['mark_price']
         entry_price = active_trade['entry_price']
         max_price_seen = active_trade['max_price_seen']
         
@@ -517,16 +377,13 @@ class SignalChecker:
         }
         
         # Check sell signal
-        signal_triggered, signal_details = self.check_signal_combos(row, 'sell')
+        signal_triggered = self.check_signal_combos(row, 'sell')
         if signal_triggered:
             exit_details.update({
                 'exit_reason': 'sell_signal',
-                'signal_details': signal_details
             })
             if self.debug:
-                print(f"🔴 SELL signal for {symbol}:")
-                print(f"   Trend: {signal_details['trend_conditions_met']}/{signal_details['trend_required']} - {signal_details['trend_conditions']}")
-                print(f"   Momentum: {signal_details['momentum_conditions_met']}/{signal_details['momentum_required']} - {signal_details['momentum_conditions']}")
+                print(f"🔴 SELL signal for {symbol} {row['contract_type']} {row['strike_price']}")
             return True, exit_details
         
         # Check stop loss
@@ -551,20 +408,83 @@ class SignalChecker:
         
         return False, exit_details
     
-    def enter_trade(self, symbol: str, row: pd.Series, signal_details: Dict) -> Dict:
+    def should_exit_trade_stops_only(self, symbol: str, row: pd.Series) -> Tuple[bool, Dict]:
+        """
+        Check only stop loss and trailing stop conditions (not sell signals).
+        Used for mark_price change detection to catch risk management exits faster.
+        
+        Args:
+            symbol: Option symbol
+            row: Current data row with mark_price
+            
+        Returns:
+            Tuple of (should_exit, exit_details)
+        """
+        # No active trade to exit
+        if symbol not in self.active_trades or row['contract_type'] not in self.active_trades[symbol]:
+            return False, {'reason': 'no_active_trade'}
+        
+        active_trade = self.active_trades[symbol][row['contract_type']]
+        current_price = row['mark_price']
+        entry_price = active_trade['entry_price']
+        max_price_seen = active_trade['max_price_seen']
+        
+        exit_details = {
+            'current_price': current_price,
+            'entry_price': entry_price,
+            'max_price_seen': max_price_seen,
+            'unrealized_pnl': current_price - entry_price,
+            'max_unrealized_pnl': max_price_seen - entry_price,
+            'price_source': 'mark_price'
+        }
+        
+        # Check stop loss (using mark_price)
+        if current_price <= entry_price * self.stop_loss_pct:
+            exit_details.update({
+                'exit_reason': 'stop_loss',
+                'stop_loss_level': entry_price * self.stop_loss_pct
+            })
+            if self.debug:
+                print(f"🛑 STOP LOSS triggered (mark_price) for {symbol}: {current_price:.4f} <= {entry_price * self.stop_loss_pct:.4f}")
+            return True, exit_details
+        
+        # Check trailing stop (using mark_price)
+        if current_price <= max_price_seen * self.trailing_stop_pct:
+            exit_details.update({
+                'exit_reason': 'trailing_stop',
+                'trailing_stop_level': max_price_seen * self.trailing_stop_pct
+            })
+            if self.debug:
+                print(f"📉 TRAILING STOP triggered (mark_price) for {symbol}: {current_price:.4f} <= {max_price_seen * self.trailing_stop_pct:.4f}")
+            return True, exit_details
+        
+        return False, exit_details
+    
+    def enter_trade(self, symbol: str, row: pd.Series) -> Dict:
         """
         Enter a new trade for the symbol
         
         Args:
             symbol: Option symbol
             row: Current data row
-            signal_details: Details about the entry signal
             
         Returns:
             Trade entry details
         """
-        entry_price = row['last_price']
+        entry_price = row['mark_price']
         timestamp = row.get('timestamp', datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        
+        # Capture entry indicator values
+        entry_indicators = {
+            'entry_ema': row.get('ema', 0),
+            'entry_vwma': row.get('vwma', 0),
+            'entry_macd_line': row.get('macd_line', 0),
+            'entry_macd_signal': row.get('macd_signal', 0),
+            'entry_stoch_k': row.get('stoch_rsi_k', 0),
+            'entry_stoch_d': row.get('stoch_rsi_d', 0),
+            'entry_roc': row.get('roc', 0),
+            'entry_roc_of_roc': row.get('roc_of_roc', 0)
+        }
         
         trade_info = {
             'symbol': symbol,
@@ -572,18 +492,20 @@ class SignalChecker:
             'entry_timestamp': timestamp,
             'max_price_seen': entry_price,
             'min_price_seen': entry_price,
-            'signal_details': signal_details
+            'entry_indicators': entry_indicators
         }
         
-        self.active_trades[symbol] = trade_info
+        # Initialize active_trades structure for this symbol if needed
+        if symbol not in self.active_trades:
+            self.active_trades[symbol] = {}
+        
+        self.active_trades[symbol][row['contract_type']] = trade_info
         
         # Log trade opening to CSV
         self.log_trade_open(trade_info)
         
         if self.debug:
-            base_symbol, contract_type = self.extract_symbol_info(symbol)
-            print(f"💰 ENTERED trade: {base_symbol}_{contract_type} at ${entry_price:.4f}")
-            print(f"   Signal: {signal_details.get('trend_conditions', [])} + {signal_details.get('momentum_conditions', [])}")
+            print(f"💰 ENTERED trade: {symbol} at ${entry_price:.4f}")
         
         return trade_info
     
@@ -599,11 +521,11 @@ class SignalChecker:
         Returns:
             Completed trade details
         """
-        if symbol not in self.active_trades:
+        if symbol not in self.active_trades or row['contract_type'] not in self.active_trades[symbol]:
             return {}
         
-        active_trade = self.active_trades[symbol]
-        exit_price = row['last_price']
+        active_trade = self.active_trades[symbol][row['contract_type']] 
+        exit_price = row['mark_price']
         exit_timestamp = row.get('timestamp', datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         
         # Calculate trade metrics
@@ -611,6 +533,18 @@ class SignalChecker:
         profit_pct = (profit / active_trade['entry_price']) * 100
         max_unrealized_profit = active_trade['max_price_seen'] - active_trade['entry_price']
         max_drawdown = active_trade['min_price_seen'] - active_trade['entry_price']
+        
+        # Capture exit indicator values
+        exit_indicators = {
+            'exit_ema': row.get('ema', 0),
+            'exit_vwma': row.get('vwma', 0),
+            'exit_macd_line': row.get('macd_line', 0),
+            'exit_macd_signal': row.get('macd_signal', 0),
+            'exit_stoch_k': row.get('stoch_rsi_k', 0),
+            'exit_stoch_d': row.get('stoch_rsi_d', 0),
+            'exit_roc': row.get('roc', 0),
+            'exit_roc_of_roc': row.get('roc_of_roc', 0)
+        }
         
         completed_trade = {
             'symbol': symbol,
@@ -622,7 +556,8 @@ class SignalChecker:
             'profit_pct': profit_pct,
             'max_unrealized_profit': max_unrealized_profit,
             'max_drawdown': max_drawdown,
-            'entry_signal': active_trade['signal_details'],
+            'entry_indicators': active_trade.get('entry_indicators', {}),
+            'exit_indicators': exit_indicators,
             'exit_reason': exit_details.get('exit_reason', 'unknown'),
             'exit_details': exit_details
         }
@@ -636,29 +571,28 @@ class SignalChecker:
         self.log_trade_close(completed_trade)
         
         # Remove from open trades CSV
-        self.remove_from_open_trades_csv(symbol)
+        self.remove_from_open_trades_csv(symbol, completed_trade['contract_type'], completed_trade['strike_price'])
         
         # Remove from active trades
-        del self.active_trades[symbol]
+        del self.active_trades[symbol][row['contract_type']]
         
         if self.debug:
-            base_symbol, contract_type = self.extract_symbol_info(symbol)
-            print(f"📤 EXITED trade: {base_symbol}_{contract_type} at ${exit_price:.4f}")
+            print(f"📤 EXITED trade: {symbol} strike {completed_trade['strike_price']} contract type {completed_trade['contract_type']} at ${exit_price:.4f}")
             print(f"   Profit: ${profit:.4f} ({profit_pct:.2f}%)")
             print(f"   Reason: {exit_details.get('exit_reason', 'unknown')}")
         
         return completed_trade
     
-    def update_trade_tracking(self, symbol: str, current_price: float):
+    def update_trade_tracking(self, symbol: str, current_price: float, contract_type: str):
         """
         Update max/min price tracking for active trade
         
         Args:
             symbol: Option symbol
-            current_price: Current last_price
+            current_price: Current mark_price
         """
-        if symbol in self.active_trades:
-            trade = self.active_trades[symbol]
+        if symbol in self.active_trades and contract_type in self.active_trades[symbol]:
+            trade = self.active_trades[symbol][contract_type]
             trade['max_price_seen'] = max(trade['max_price_seen'], current_price)
             trade['min_price_seen'] = min(trade['min_price_seen'], current_price)
     
@@ -673,12 +607,12 @@ class SignalChecker:
         Returns:
             Dictionary with processing results
         """
-        current_price = row.get('last_price', 0)
+        current_price = row.get('mark_price', 0)
         if current_price == 0:
             return {'action': 'no_price_data'}
         
         # Update active trade tracking
-        self.update_trade_tracking(symbol, current_price)
+        self.update_trade_tracking(symbol, current_price, row['contract_type'])
         
         result = {
             'symbol': symbol,
@@ -687,7 +621,7 @@ class SignalChecker:
             'action': 'none'
         }
         
-        # Check if we should exit an active trade
+        # Check if we should exit an active trade (all exit conditions)
         should_exit, exit_details = self.should_exit_trade(symbol, row)
         if should_exit:
             completed_trade = self.exit_trade(symbol, row, exit_details)
@@ -698,9 +632,9 @@ class SignalChecker:
             return result
         
         # Check if we should enter a new trade
-        should_enter, signal_details = self.should_enter_trade(symbol, row)
+        should_enter = self.should_enter_trade(symbol, row)
         if should_enter:
-            trade_info = self.enter_trade(symbol, row, signal_details)
+            trade_info = self.enter_trade(symbol, row)
             result.update({
                 'action': 'enter_trade',
                 'trade_details': trade_info
@@ -708,10 +642,10 @@ class SignalChecker:
             return result
         
         # No action taken
-        if symbol in self.active_trades:
+        if symbol in self.active_trades and row['contract_type'] in self.active_trades[symbol]:
             result.update({
                 'action': 'holding',
-                'unrealized_pnl': current_price - self.active_trades[symbol]['entry_price']
+                'unrealized_pnl': current_price - self.active_trades[symbol][row['contract_type']]['entry_price']
             })
         
         return result
@@ -727,13 +661,13 @@ class SignalChecker:
         
         if not all_trades:
             return {
-                'total_trades': 0,
-                'active_trades': len(self.active_trades),
-                'open_trades_csv': len(open_trades_csv),
-                'csv_sync_status': 'synced' if len(self.active_trades) == len(open_trades_csv) else 'out_of_sync',
-                'total_profit': 0,
-                'win_rate': 0,
-                'avg_profit': 0
+                'total_trades': 0,  # total trades
+                'active_trades': len(self.active_trades),  # active trades
+                'open_trades_csv': len(open_trades_csv),  # open trades in csv
+                'csv_sync_status': 'synced' if len(self.active_trades) == len(open_trades_csv) else 'out_of_sync',  # sync status
+                'total_profit': 0,  # total profit
+                'win_rate': 0,  # win rate
+                'avg_profit': 0  # average profit
             }
         
         total_profit = sum(trade['profit'] for trade in all_trades)
@@ -757,7 +691,7 @@ class SignalChecker:
             with open(filename, 'w') as f:
                 json.dump({
                     'trades': self.trades,
-                    'active_trades': self.active_trades,
+                    'active_trades': self.active_trades,  # active trades
                     'summary': self.get_trade_summary()
                 }, f, indent=2, default=str)
             if self.debug:
@@ -776,7 +710,7 @@ if __name__ == "__main__":
     # Create sample data with indicators
     sample_data = pd.Series({
         'timestamp': '2025-01-29 10:30:00',
-        'last_price': 2.50,
+        'mark_price': 2.50,
         'ema': 2.48,
         'vwma': 2.46,
         'roc': 1.5,

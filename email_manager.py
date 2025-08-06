@@ -6,6 +6,7 @@ Integrates with the email client to send trade notifications and daily summaries
 
 import os
 import sys
+import zipfile
 from datetime import datetime, time
 from typing import Dict, List, Optional
 import pandas as pd
@@ -238,9 +239,23 @@ Signal Conditions:
             # Read trades data
             df = pd.read_csv(trades_file)
             
-            # Filter for today's trades
+            # Check if DataFrame is empty or missing required columns
+            if df.empty:
+                if self.debug:
+                    print(f"📧 Trades file is empty: {trades_file}")
+                return
+            
+            required_columns = ['exit_timestamp', 'profit', 'profit_pct', 'symbol']
+            missing_columns = [col for col in required_columns if col not in df.columns]
+            
+            if missing_columns:
+                if self.debug:
+                    print(f"📧 Trades file missing required columns: {missing_columns}")
+                return
+            
+            # Filter for today's trades using exit_timestamp
             today_str = today.strftime("%Y-%m-%d")
-            today_trades = df[df['timestamp'].str.startswith(today_str)]
+            today_trades = df[df['exit_timestamp'].str.startswith(today_str)]
             
             if len(today_trades) == 0:
                 if self.debug:
@@ -292,15 +307,29 @@ Trades by Symbol:
                 
                 body += f"- {symbol}: {count} trades, ${total:.2f} total, ${avg:.2f} avg ({avg_pct:.2f}%)\n"
             
-            body += f"\nDetailed trades are attached in the CSV file.\n"
+            body += f"\nComplete trading data (trades, options data, etc.) is attached as a zip file.\n"
             
-            # Send email with attachment
+            # Create zip file of entire data folder
+            data_zip_file = self._create_data_folder_zip(today_str)
+            
+            # Send email with data folder zip attachment
+            attachments = [data_zip_file] if data_zip_file else [trades_file]  # Fallback to trades file if zip fails
             success = self.email_client.send_email(
                 to_emails=self.recipient_emails,
                 subject=subject,
                 body=body.strip(),
-                attachments=[trades_file]
+                attachments=attachments
             )
+            
+            # Clean up the temporary zip file
+            if data_zip_file and os.path.exists(data_zip_file):
+                try:
+                    os.remove(data_zip_file)
+                    if self.debug:
+                        print(f"🗑️ Cleaned up temporary zip file: {data_zip_file}")
+                except Exception as e:
+                    if self.debug:
+                        print(f"⚠️ Could not clean up zip file {data_zip_file}: {e}")
             
             if success:
                 self._last_summary_date = today
@@ -312,6 +341,61 @@ Trades by Symbol:
         except Exception as e:
             if self.debug:
                 print(f"❌ Error sending daily summary: {e}")
+    
+    def _create_data_folder_zip(self, date_str: str) -> str:
+        """
+        Create a zip file of the entire data folder for email attachment
+        
+        Args:
+            date_str: Date string for filename (e.g., "2025-08-01")
+            
+        Returns:
+            str: Path to created zip file, or None if failed
+        """
+        try:
+            data_folder = "data"
+            
+            # Check if data folder exists
+            if not os.path.exists(data_folder):
+                if self.debug:
+                    print(f"⚠️ Data folder '{data_folder}' not found")
+                return None
+            
+            # Create zip filename with date
+            zip_filename = f"trading_data_{date_str}.zip"
+            
+            if self.debug:
+                print(f"📦 Creating data folder zip: {zip_filename}")
+            
+            # Create zip file
+            with zipfile.ZipFile(zip_filename, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                # Walk through data directory and add all files
+                for root, dirs, files in os.walk(data_folder):
+                    for file in files:
+                        file_path = os.path.join(root, file)
+                        # Add file to zip with relative path
+                        arcname = os.path.relpath(file_path, os.path.dirname(data_folder))
+                        zipf.write(file_path, arcname)
+                        
+                        if self.debug:
+                            file_size = os.path.getsize(file_path)
+                            print(f"   📄 Added: {arcname} ({file_size:,} bytes)")
+            
+            # Check if zip was created successfully
+            if os.path.exists(zip_filename):
+                zip_size = os.path.getsize(zip_filename)
+                if self.debug:
+                    print(f"✅ Created zip file: {zip_filename} ({zip_size:,} bytes)")
+                return zip_filename
+            else:
+                if self.debug:
+                    print(f"❌ Failed to create zip file: {zip_filename}")
+                return None
+                
+        except Exception as e:
+            if self.debug:
+                print(f"❌ Error creating data folder zip: {e}")
+            return None
     
     def check_and_send_daily_summary(self):
         """

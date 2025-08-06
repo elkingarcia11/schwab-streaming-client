@@ -1,8 +1,8 @@
 {
     "QQQ":  {
         "1m": {
-            "ema": 7,
-            "vwma": 12,
+            "ema": 8,
+            "vwma": 13,
             "roc": 11,
             "roc_of_roc": 18,
             "macd_fast": 12,
@@ -16,7 +16,6 @@
             "ema": 6,
             "vwma": 11,
             "roc": 19,
-            "roc_of_roc": 16,
             "macd_fast": 22,
             "macd_slow": 36,
             "macd_signal": 30
@@ -24,8 +23,8 @@
     },
     "SPY": {
         "1m": {
-            "ema": 7,
-            "vwma": 12,
+            "ema": 10,
+            "vwma": 22,
             "roc": 11,
             "roc_of_roc": 18,
             "macd_fast": 12,
@@ -39,7 +38,6 @@
             "ema": 16,
             "vwma": 13,
             "roc": 3, 
-            "roc_of_roc": 3,
             "macd_fast": 9,
             "macd_slow": 12,
             "macd_signal": 12
