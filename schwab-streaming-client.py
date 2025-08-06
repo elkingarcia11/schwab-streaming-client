@@ -455,21 +455,37 @@ class SchwabStreamingClient:
         Only called when last_price has changed to optimize performance.
         """
         try:
-            # Check if we have indicator periods for this symbol and timeframe
-            if symbol not in self.indicator_periods or '1m' not in self.indicator_periods[symbol]:
+            # Extract underlying symbol from option symbol: "SPY   250807P00633000" -> "SPY"
+            if self.debug:
+                print(f"🔍 DEBUG: Symbol type: {type(symbol)}, value: '{symbol}'")
+            
+            if not isinstance(symbol, str):
                 if self.debug:
-                    print(f"⚠️  No indicator config found for {symbol}")
+                    print(f"❌ Error: Symbol is not a string: {type(symbol)}")
+                return option_data
+                
+            underlying_symbol = symbol[:3].strip()  # First 3 characters
+            if self.debug:
+                print(f"🔍 DEBUG: Extracted underlying symbol '{underlying_symbol}' from option symbol '{symbol}'")
+            
+            # Check if we have indicator periods for this underlying symbol and timeframe
+            if underlying_symbol not in self.indicator_periods or '1m' not in self.indicator_periods[underlying_symbol]:
+                if self.debug:
+                    print(f"⚠️  No indicator config found for {symbol} (underlying: {underlying_symbol})")
                 return option_data  # Return unchanged if no configuration
             
-            indicator_config = self.indicator_periods[symbol]['1m']
+            indicator_config = self.indicator_periods[underlying_symbol]['1m']
             
-            # Get existing RECORDED data for this symbol to build history (not streaming data)
-            if symbol not in self.option_recording_data or len(self.option_recording_data[symbol]) == 0:
+            # Get existing RECORDED data for this symbol/contract_type to build history (not streaming data)
+            contract_type = option_data.get('contract_type', '')
+            if (symbol not in self.option_recording_data or 
+                contract_type not in self.option_recording_data[symbol] or 
+                len(self.option_recording_data[symbol][contract_type]) == 0):
                 if self.debug:
-                    print(f"⚠️  No recorded data for {symbol} - skipping indicators")
+                    print(f"⚠️  No recorded data for {symbol} - {contract_type} - skipping indicators")
                 return option_data  # Not enough recorded data for indicators
             
-            total_recorded_count = len(self.option_recording_data[symbol])
+            total_recorded_count = len(self.option_recording_data[symbol][contract_type])
             historical_count = total_recorded_count - 1  # Exclude current row from history
             if self.debug:
                 print(f"📊 Calculating indicators for {symbol}: {historical_count} historical + 1 current = {total_recorded_count} total")
@@ -478,7 +494,7 @@ class SchwabStreamingClient:
             # Convert RECORDED option data history to DataFrame format expected by indicator calculator
             # Use all recorded data EXCEPT the current row (which we'll pass as new_row)
             option_history = []
-            for opt_record in self.option_recording_data[symbol][:-1]:  # Exclude the last (current) row
+            for opt_record in self.option_recording_data[symbol][contract_type][:-1]:  # Exclude the last (current) row
                 # Convert option fields to OHLCV-like format for indicator calculation
                 price = opt_record.get('mark_price', 0)
                 option_history.append({
@@ -520,14 +536,16 @@ class SchwabStreamingClient:
                 is_option=True  # Use mark_price for calculations
             )
             
-            # Add indicator values to option_data (only non-empty values)
+            # Add ALL indicator values to option_data (including empty ones for CSV consistency)
             indicators_added = []
             indicators_empty = []
             for col in enhanced_row.index:
                 if col not in ['timestamp', 'open', 'high', 'low', 'close', 'mark_price', 'volume']:
                     value = enhanced_row[col]
-                    if value != "" and value != 0 and not pd.isna(value):  # Only add meaningful values
-                        option_data[col] = value
+                    # Always add the indicator field to option_data, even if empty
+                    option_data[col] = value if value != "" and value != 0 and not pd.isna(value) else ""
+                    
+                    if value != "" and value != 0 and not pd.isna(value):  # Track meaningful values
                         indicators_added.append(f"{col}={value}")
                     else:
                         indicators_empty.append(col)
@@ -537,6 +555,13 @@ class SchwabStreamingClient:
                     print(f"📊 Added indicators for {symbol}: {', '.join(indicators_added)}")
                 if indicators_empty:
                     print(f"⏭️  Empty indicators for {symbol}: {', '.join(indicators_empty)} (insufficient data)")
+                
+                # Debug: Show what indicator fields are in the final option_data
+                indicator_fields = [k for k in option_data.keys() if k in ['ema', 'vwma', 'roc', 'roc_of_roc', 'macd_line', 'macd_signal', 'stoch_rsi_k', 'stoch_rsi_d']]
+                if indicator_fields:
+                    print(f"🔍 DEBUG: Indicator fields in option_data: {indicator_fields}")
+                    for field in indicator_fields:
+                        print(f"   {field}: {option_data.get(field, 'N/A')}")
             
             return option_data
             
@@ -557,10 +582,13 @@ class SchwabStreamingClient:
             bool: True if we have sufficient data for signal checking
         """
         try:
+            # Extract underlying symbol from option symbol: "SPY   250807P00634000" -> "SPY"
+            underlying_symbol = symbol[:3].strip()  # First 3 characters
+            
             # Get macd_slow period from indicator configuration
             macd_slow = 26  # Default value
-            if symbol in self.indicator_periods and '1m' in self.indicator_periods[symbol]:
-                config = self.indicator_periods[symbol]['1m']
+            if underlying_symbol in self.indicator_periods and '1m' in self.indicator_periods[underlying_symbol]:
+                config = self.indicator_periods[underlying_symbol]['1m']
                 macd_slow = config.get('macd_slow', 26)
             
             # Calculate minimum entries needed: macd_slow * 3 +1 for current row
@@ -984,7 +1012,7 @@ class SchwabStreamingClient:
             if not symbol:
                 print(f"⚠️ Warning: Empty symbol in option data: {content_item}")
                 return {}
-
+            
             # Update only the fields that are present in the new message
             field_mapping = {
                 '0': 'symbol',
@@ -1049,12 +1077,12 @@ class SchwabStreamingClient:
             if symbol not in self.mark_price_changed:
                 self.mark_price_changed[symbol] = {}
             if contract_type not in self.mark_price_changed[symbol]:
-                self.mark_price_changed[symbol][contract_type] = False
+                self.mark_price_changed[symbol][contract_type] = True
                 
             if symbol not in self.last_price_changed:
                 self.last_price_changed[symbol] = {}
             if contract_type not in self.last_price_changed[symbol]:
-                self.last_price_changed[symbol][contract_type] = False
+                self.last_price_changed[symbol][contract_type] = True
                 
             if symbol not in self.total_volume_changed:
                 self.total_volume_changed[symbol] = {}
@@ -1064,10 +1092,43 @@ class SchwabStreamingClient:
             if symbol not in self.previous_option_values:
                 self.previous_option_values[symbol] = {}
             if contract_type not in self.previous_option_values[symbol]:
-                # Initialize with all defaults (0s and empty strings) - only update from stream
+                # Parse symbol to extract static information: "SPY   250807C00631000"
+                # Extract underlying (first 3 chars), date, call/put, strike
+                symbol_clean = symbol.strip()
+                underlying = symbol_clean[:3]
+                
+                # Parse the option symbol format: SPY   250807C00631000
+                # Format: UNDERLYING + YYMMDD + C/P + STRIKE(5 digits + 3 decimals)
+                if len(symbol_clean) >= 18:
+                    date_part = symbol_clean[6:12]  # 250807
+                    contract_char = symbol_clean[12]  # C or P
+                    strike_part = symbol_clean[13:]   # 00631000
+                    
+                    # Convert strike: 00631000 -> 631.000
+                    try:
+                        strike_price = float(strike_part) / 1000
+                    except:
+                        strike_price = 0
+                        
+                    # Convert date: 250807 -> year=2025, month=8, day=7
+                    try:
+                        year = 2000 + int(date_part[:2])  # 25 -> 2025
+                        month = int(date_part[2:4])       # 08 -> 8
+                        day = int(date_part[4:6])         # 07 -> 7
+                    except:
+                        year, month, day = 0, 0, 0
+                        
+                    # Create description: "SPY 08/07/2025 631.00 C"
+                    description = f"{underlying} {month:02d}/{day:02d}/{year} {strike_price:.2f} {contract_char}"
+                else:
+                    strike_price = 0
+                    year, month, day = 0, 0, 0
+                    description = ""
+                
+                # Initialize with parsed static data and defaults for streaming fields
                 self.previous_option_values[symbol][contract_type] = {
-                'symbol': '',           # 0: Symbol (Ticker symbol in upper case)
-                'description': '',      # 1: Description (Company, index or fund name)
+                'symbol': underlying,       # 0: Symbol (Ticker symbol in upper case)
+                'description': description, # 1: Description (Company, index or fund name)
                 'bid_price': 0,         # 2: Bid Price (Current Bid Price)
                 'ask_price': 0,         # 3: Ask Price (Current Ask Price)
                 'last_price': 0,        # 4: Last Price (Price at which the last trade was matched)
@@ -1078,54 +1139,57 @@ class SchwabStreamingClient:
                 'open_interest': 0,     # 9: Open Interest
                 'volatility': 0,        # 10: Volatility (Option Risk/Volatility Measurement/Implied)
                 'money_intrinsic_value': 0,  # 11: Money Intrinsic Value
-                'expiration_year': 0,   # 12: Expiration Year
-                'multiplier': 0,        # 13: Multiplier
-                'digits': 0,            # 14: Digits (Number of decimal places)
+                'expiration_year': year,     # 12: Expiration Year
+                'multiplier': 100,      # 13: Multiplier (standard for equity options)
+                'digits': 2,            # 14: Digits (Number of decimal places)
                 'open_price': 0,        # 15: Open Price (Day's Open Price)
                 'bid_size': 0,          # 16: Bid Size (Number of contracts for bid)
                 'ask_size': 0,          # 17: Ask Size (Number of contracts for ask)
                 'last_size': 0,         # 18: Last Size (Number of contracts traded with last trade)
                 'net_change': 0,        # 19: Net Change (Current Last-Prev Close)
-                'strike_price': 0,      # 20: Strike Price (Contract strike price)
-                'contract_type': '',    # 21: Contract Type
-                'underlying': '',       # 22: Underlying
-                'expiration_month': 0,  # 23: Expiration Month
-                'deliverables': '',     # 24: Deliverables
+                'strike_price': strike_price,    # 20: Strike Price (Contract strike price)
+                'contract_type': contract_char,  # 21: Contract Type
+                'underlying': underlying,        # 22: Underlying
+                'expiration_month': month,       # 23: Expiration Month
+                'deliverables': f"100 {underlying}",  # 24: Deliverables
                 'time_value': 0,        # 25: Time Value
-                'expiration_day': 0,    # 26: Expiration Day
+                'expiration_day': day,  # 26: Expiration Day
                 'days_to_expiration': 0, # 27: Days to Expiration
                 'delta': 0,             # 28: Delta
                 'gamma': 0,             # 29: Gamma
                 'theta': 0,             # 30: Theta
                 'vega': 0,              # 31: Vega
                 'rho': 0,               # 32: Rho
-                'security_status': '',  # 33: Security Status
+                'security_status': 'Normal',  # 33: Security Status
                 'theoretical_option_value': 0, # 34: Theoretical Option Value
                 'underlying_price': 0,  # 35: Underlying Price
-                'uv_expiration_type': '', # 36: UV Expiration Type
+                'uv_expiration_type': 'W',  # 36: UV Expiration Type (W for weekly)
                 'mark_price': 0,        # 37: Mark Price
                 'quote_time': 0,        # 38: Quote Time in Long (milliseconds since Epoch)
                 'trade_time': 0,        # 39: Trade Time in Long (milliseconds since Epoch)
-                'exchange': '',         # 40: Exchange (Exchange character)
-                'exchange_name': '',    # 41: Exchange Name (Display name of exchange)
+                'exchange': 'O',        # 40: Exchange (Exchange character)
+                'exchange_name': 'OPR', # 41: Exchange Name (Display name of exchange)
                 'last_trading_day': 0,  # 42: Last Trading Day
-                'settlement_type': '',  # 43: Settlement Type (Settlement type character)
+                'settlement_type': 'P', # 43: Settlement Type (Settlement type character)
                 'net_percent_change': 0, # 44: Net Percent Change
                 'mark_price_net_change': 0, # 45: Mark Price Net Change
                 'mark_price_percent_change': 0, # 46: Mark Price Percent Change
                 'implied_yield': 0,     # 47: Implied Yield
-                'is_penny_pilot': False, # 48: isPennyPilot
-                'option_root': '',      # 49: Option Root
+                'is_penny_pilot': True, # 48: isPennyPilot
+                'option_root': underlying, # 49: Option Root
                 'week_52_high': 0,      # 50: 52 Week High
                 'week_52_low': 0,       # 51: 52 Week Low
                 'indicative_ask_price': 0, # 52: Indicative Ask Price
                 'indicative_bid_price': 0, # 53: Indicative Bid Price
                 'indicative_quote_time': 0, # 54: Indicative Quote Time
-                'exercise_type': ''     # 55: Exercise Type
+                'exercise_type': 'A'    # 55: Exercise Type (A for American)
             }
 
             # Get previous values for this symbol/contract_type (starts with defaults on first call)
             previous_option_values = self.previous_option_values[symbol][contract_type]
+            
+            if self.debug:
+                print(f"🔍 DEBUG: Previous values for {symbol} - {contract_type}: last_price={previous_option_values.get('last_price', 'N/A')}, total_volume={previous_option_values.get('total_volume', 'N/A')}")
             
             # Create new option data by merging previous values with new updates
             option_data = previous_option_values.copy()
@@ -1147,9 +1211,16 @@ class SchwabStreamingClient:
                     option_data[field_name] = content_item[field_key]
             
             # Add symbol to the data for internal use (will be removed before CSV save)
-            option_data['_symbol'] = symbol   
-            # Store the updated values for next time
-            self.previous_option_values[symbol][contract_type] = option_data.copy()
+            option_data['_symbol'] = symbol
+            # Store the updated values for next time - only update changed fields
+            for field_key, field_name in field_mapping.items():
+                if field_key in content_item:
+                    self.previous_option_values[symbol][contract_type][field_name] = option_data[field_name]
+                    if self.debug and field_name in ['last_price', 'total_volume']:
+                        print(f"🔍 DEBUG: Updated {field_name} for {symbol} - {contract_type}: {option_data[field_name]}")
+            
+            # Don't store volume delta in previous_option_values - it should be calculated fresh each time
+            # The volume field is only for CSV output, not for persistence
             
             return option_data
         except Exception as e:
@@ -1236,9 +1307,15 @@ class SchwabStreamingClient:
                             if self.debug:
                                 print(f"🔍 Processing LEVELONE_OPTIONS data: {content_item.get('key', 'NO_KEY')}")
                             
+                            # Extract contract type from symbol: "SPY   250807C00631000" -> "C"
+                            symbol_key = content_item.get('key', '')
+                            contract_type = ''
+                            if len(symbol_key) >= 13:
+                                contract_type = symbol_key[12]  # 13th character is C or P
+                            
                             # Note: parse_option_data already merges partial updates with previous_option_values
                             # This gives us a complete record with all 56 fields for this update
-                            option_data = self.parse_option_data(content_item, content_item.get('21', ''))
+                            option_data = self.parse_option_data(content_item, contract_type)
                             if option_data:
                                 symbol = option_data['_symbol'] # Get symbol from parsed data
                                 
@@ -1248,30 +1325,32 @@ class SchwabStreamingClient:
                                 if option_data['contract_type'] not in self.option_data[symbol]:
                                     self.option_data[symbol][option_data['contract_type']] = []
                                 
-                                # Always update streaming DataFrame (real-time updates with complete data)
-                                self.option_data[symbol][option_data['contract_type']].append(option_data)                             
-                                
                                 # Initialize recording DataFrame structure for this symbol if needed
                                 if symbol not in self.option_recording_data:
                                     self.option_recording_data[symbol] = {}
                                 if option_data['contract_type'] not in self.option_recording_data[symbol]:
                                     self.option_recording_data[symbol][option_data['contract_type']] = []
                                     
-                                # Add to recording DataFrame first (without indicators)
-                                self.option_recording_data[symbol][option_data['contract_type']].append(option_data)
+                                # Always update streaming DataFrame (real-time updates with complete data)
+                                self.option_data[symbol][option_data['contract_type']].append(option_data)                             
+                                
 
-                                # Check if last price changed (which triggers full processing)
+                                # Check if last price changed (only trigger for actual trades)
                                 if self.last_price_changed[symbol][option_data['contract_type']]:
-                                    # Last price changed → Regular full processing
+                                    # Last price changed → Record and save to CSV
                                     if self.debug:
                                         print(f"🔄 LAST PRICE CHANGED: {symbol}")
                                     
+                                    # TRADEABLE STRIKE: Calculate indicators and process all signals
+                                    option_data = self.calculate_option_indicators(symbol, option_data)
+
+                                    
+                                    # Add to recording DataFrame first (without indicators)
+                                    self.option_recording_data[symbol][option_data['contract_type']].append(option_data)
                                     # Check if this is a tradeable strike using row data
                                     is_tradeable = self._is_trading_eligible_strike(symbol, option_data['contract_type'], option_data['strike_price'])
                                     
                                     if is_tradeable and self._has_sufficient_data_for_signals(symbol, option_data['contract_type']):
-                                        # TRADEABLE STRIKE: Calculate indicators and process all signals
-                                        option_data = self.calculate_option_indicators(symbol, option_data)
                                         
                                         # Process all trading signals (entries, signal exits, AND stops)
                                         self.process_trading_signals(symbol, option_data)
@@ -1281,6 +1360,12 @@ class SchwabStreamingClient:
                                         
                                         if self.debug:
                                             print(f"🎯 TRADEABLE: {symbol} - Strike Price: {option_data['strike_price']}")
+
+                                    # Save to CSV
+                                    self.save_option_data_to_csv(symbol, option_data)
+
+                                    # Reset the last_price_changed flag after processing
+                                    self.last_price_changed[symbol][option_data['contract_type']] = False
 
                                 elif self.mark_price_changed[symbol][option_data['contract_type']]:
                                     # Check if active trade for SYMBOL CONTRACT TYPE exists
@@ -1318,12 +1403,8 @@ class SchwabStreamingClient:
                                                     }
                                                 )
 
-                                # Save to CSV
-                                self.save_option_data_to_csv(symbol, option_data)
-
-                                # Update the mark_price_changed and last_price_changed flags
-                                self.mark_price_changed[symbol][option_data['contract_type']] = False
-                                self.last_price_changed[symbol][option_data['contract_type']] = False
+                                    # Reset the mark_price_changed flag after processing
+                                    self.mark_price_changed[symbol][option_data['contract_type']] = False
                                 
                             else:
                                 if self.debug:
@@ -1541,6 +1622,8 @@ class SchwabStreamingClient:
             # Define CSV file path
             csv_file = f'data/options/{clean_symbol}.csv'
             
+
+            
             # Remove internal fields that shouldn't be in CSV
             csv_data = data.copy()
             csv_data.pop('_symbol', None)  # Remove symbol since filename contains it
@@ -1549,15 +1632,17 @@ class SchwabStreamingClient:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             
             # Note: volume delta is already calculated in parse_option_data()
- 
+            
             # Create ordered dictionary with timestamp first
             ordered_data = {'timestamp': timestamp}
             ordered_data.update(csv_data)
             
             # Ensure all potential indicator columns are present (even if empty) for consistent headers
-            # Group related indicators together in desired column order 
-            if symbol in self.indicator_periods and '1m' in self.indicator_periods[symbol]:
-                indicator_config = self.indicator_periods[symbol]['1m']
+            # Group related indicators together in desired column order
+            # Extract underlying symbol from option symbol: "SPY   250807P00634000" -> "SPY"
+            underlying_symbol = symbol[:3].strip()  # First 3 characters
+            if underlying_symbol in self.indicator_periods and '1m' in self.indicator_periods[underlying_symbol]:
+                indicator_config = self.indicator_periods[underlying_symbol]['1m']
                 
                 # Define ordered indicator groups
                 indicator_groups = [
