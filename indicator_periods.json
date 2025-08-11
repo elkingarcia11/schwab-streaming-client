@@ -4,13 +4,12 @@
             "ema": 8,
             "vwma": 13,
             "roc": 11,
-            "roc_of_roc": 18,
             "macd_fast": 12,
             "macd_slow": 26,
             "macd_signal": 9,
             "stoch_rsi_period": 14,
-            "stoch_rsi_k": 3,
-            "stoch_rsi_d": 3
+            "stoch_rsi_k": 12,
+            "stoch_rsi_d": 15
         },
         "5m": {
             "ema": 6,
@@ -23,10 +22,10 @@
     },
     "SPY": {
         "1m": {
-            "ema": 10,
-            "vwma": 22,
-            "roc": 11,
-            "roc_of_roc": 18,
+            "ema_fast": 8,
+            "ema_slow": 16,
+            "roc_fast": 11,
+            "roc_slow": 18,
             "macd_fast": 12,
             "macd_slow": 26,
             "macd_signal": 9,

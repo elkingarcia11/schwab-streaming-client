@@ -67,25 +67,27 @@ class TradingEmailManager:
             Tuple of (strike_price, expiry_date)
         """
         try:
-            if len(full_symbol) > 10:
-                # Extract expiry (YYMMDD format)
-                expiry_part = full_symbol[3:9]  # e.g., "250731"
-                year = "20" + expiry_part[:2]
-                month = expiry_part[2:4]
-                day = expiry_part[4:6]
-                expiry = f"{year}-{month}-{day}"
+            if not full_symbol or len(full_symbol) <= 10:
+                return "N/A", "N/A"
                 
-                # Extract strike price (after the C/P)
-                for i, char in enumerate(full_symbol[9:], 9):
-                    if char in ['C', 'P']:
-                        strike_part = full_symbol[i+1:]
-                        # Convert to decimal (strike is in cents)
-                        strike_price = float(strike_part) / 1000
-                        return f"${strike_price:.2f}", expiry
-                
-                return "N/A", expiry
-            return "N/A", "N/A"
-        except:
+            # Extract expiry (YYMMDD format)
+            expiry_part = full_symbol[3:9]  # e.g., "250731"
+            year = "20" + expiry_part[:2]
+            month = expiry_part[2:4]
+            day = expiry_part[4:6]
+            expiry = f"{year}-{month}-{day}"
+            
+            # Extract strike price (after the C/P)
+            for i, char in enumerate(full_symbol[9:], 9):
+                if char in ['C', 'P']:
+                    strike_part = full_symbol[i+1:]
+                    # Convert to decimal (strike is in cents)
+                    strike_price = float(strike_part) / 1000
+                    return f"${strike_price:.2f}", expiry
+            
+            return "N/A", expiry
+        except Exception as e:
+            print(f"❌ Error extracting strike and expiry from '{full_symbol}': {e}")
             return "N/A", "N/A"
     
     def send_trade_notification(self, action: str, symbol: str, contract_type: str, 
@@ -107,52 +109,76 @@ class TradingEmailManager:
             return False
         
         try:
-            # Create subject line
-            subject = f"{action} {symbol} {contract_type}"
+            # Format contract type for display (do this first to avoid reference error)
+            contract_display = "Call" if contract_type == "C" else "Put" if contract_type == "P" else contract_type
             
             # Extract strike and expiry from full symbol
             full_symbol = additional_info.get('full_symbol', '') if additional_info else ''
             strike_price, expiry = self.extract_strike_and_expiry(full_symbol)
             
-            # Create email body based on action
+            # Create timestamp
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            
+            # Create subject line
+            subject = f"{action} {symbol} {contract_display} {strike_price} - {timestamp}"
             
             if action == "BUY":
                 body = f"""
-Trade Notification - BUY
+🚀 TRADE NOTIFICATION - BUY
 
-Action: {action}
-Symbol: {symbol}
-Contract Type: {contract_type}
-Strike Price: {strike_price}
-Expiry: {expiry}
-Entry Price: ${price:.4f}
-Time: {timestamp}
+📊 Trade Details:
+- Action: {action}
+- Symbol: {symbol}
+- Contract Type: {contract_display} ({contract_type})
+- Strike Price: {strike_price}
+- Expiry: {expiry}
+- Entry Price: ${price:.4f}
+- Time: {timestamp}
 """
             else:  # SELL
                 body = f"""
-Trade Notification - SELL
+🔴 TRADE NOTIFICATION - SELL
 
-Action: {action}
-Symbol: {symbol}
-Contract Type: {contract_type}
-Strike Price: {strike_price}
-Expiry: {expiry}
-Exit Price: ${price:.4f}
-Time: {timestamp}
+📊 Trade Details:
+- Action: {action}
+- Symbol: {symbol}
+- Contract Type: {contract_display} ({contract_type})
+- Strike Price: {strike_price}
+- Expiry: {expiry}
+- Exit Price: ${price:.4f}
+- Time: {timestamp}
 """
             
             # Add exit details for SELL actions
             if action == "SELL" and additional_info:
-                body += "\nExit Details:\n"
+                body += "\n💰 Exit Details:\n"
                 exit_reason = additional_info.get('exit_reason', 'N/A')
-                body += f"- Exit Reason: {exit_reason}\n"
+                # Format exit reason with emoji
+                exit_emoji = {
+                    'stop_loss': '🛑',
+                    'trailing_stop': '📉',
+                    'sell_signal': '🔴',
+                    'Stop Loss or Trailing Stop': '🛑'
+                }.get(exit_reason.lower(), '📊')
+                body += f"- Exit Reason: {exit_emoji} {exit_reason}\n"
                 
-                # Add profit information
+                # Add profit information with formatting
                 profit = additional_info.get('profit', 'N/A')
                 profit_pct = additional_info.get('profit_pct', 'N/A')
-                body += f"- Profit: {profit}\n"
-                body += f"- Profit %: {profit_pct}\n"
+                
+                # Format profit with emoji based on positive/negative
+                if profit != 'N/A' and profit != 0:
+                    try:
+                        profit_val = float(profit.replace('$', '').replace(',', ''))
+                        profit_emoji = "✅" if profit_val > 0 else "❌"
+                        body += f"- Profit: {profit_emoji} {profit}\n"
+                        body += f"- Profit %: {profit_emoji} {profit_pct}\n"
+                    except:
+                        body += f"- Profit: {profit}\n"
+                        body += f"- Profit %: {profit_pct}\n"
+                else:
+                    body += f"- Profit: {profit}\n"
+                    body += f"- Profit %: {profit_pct}\n"
                 
                 # Add entry price for reference
                 entry_price = additional_info.get('entry_price', 'N/A')
@@ -164,36 +190,80 @@ Time: {timestamp}
                 if duration != 'N/A':
                     body += f"- Duration: {duration} minutes\n"
                 
-                # Add exit signal details if available
-                exit_trend_conditions_met = additional_info.get('exit_trend_conditions_met', 'N/A')
-                exit_momentum_conditions_met = additional_info.get('exit_momentum_conditions_met', 'N/A')
+                # Add exit summary
+                body += f"""
+🎯 Exit Summary:
+- Exit triggered by: {exit_reason}
+- Risk management: Stop loss and trailing stop active
+"""
                 
-                if exit_trend_conditions_met != 'N/A' or exit_momentum_conditions_met != 'N/A':
-                    body += f"\nExit Signal Conditions:\n"
-                    body += f"- Trend Conditions Met: {exit_trend_conditions_met}\n"
-                    body += f"- Momentum Conditions Met: {exit_momentum_conditions_met}\n"
-                    
-                    # Add specific conditions if available
-                    exit_trend_conditions = additional_info.get('exit_trend_conditions', [])
-                    exit_momentum_conditions = additional_info.get('exit_momentum_conditions', [])
-                    
-                    if exit_trend_conditions:
-                        body += f"- Trend Conditions: {', '.join(exit_trend_conditions)}\n"
-                    if exit_momentum_conditions:
-                        body += f"- Momentum Conditions: {', '.join(exit_momentum_conditions)}\n"
-            
-            # Add signal conditions for BUY actions
-            if action == "BUY" and additional_info:
-                trend_conditions_met = additional_info.get('trend_conditions_met', 'N/A')
-                momentum_conditions_met = additional_info.get('momentum_conditions_met', 'N/A')
+                # Add technical indicators at exit
+                # Format indicator values
+                ema = additional_info.get('ema', 'N/A')
+                vwma = additional_info.get('vwma', 'N/A')
+                roc = additional_info.get('roc', 'N/A')
+                roc_of_roc = additional_info.get('roc_of_roc', 'N/A')
+                macd_line = additional_info.get('macd_line', 'N/A')
+                macd_signal = additional_info.get('macd_signal', 'N/A')
+                stoch_k = additional_info.get('stoch_rsi_k', 'N/A')
+                stoch_d = additional_info.get('stoch_rsi_d', 'N/A')
                 
                 body += f"""
-Signal Conditions:
-- Trend Conditions Met: {trend_conditions_met}
-- Momentum Conditions Met: {momentum_conditions_met}
+📈 Technical Indicators at Exit:
+- EMA: {ema}
+- VWMA: {vwma}
+- ROC: {roc}
+- ROC of ROC: {roc_of_roc}
+- MACD Line: {macd_line}
+- MACD Signal: {macd_signal}
+- Stochastic RSI K: {stoch_k}
+- Stochastic RSI D: {stoch_d}
+
+📋 Full Symbol: {full_symbol}
+"""
+            
+            # Add signal conditions and indicators for BUY actions
+            if action == "BUY" and additional_info:
+                # Add signal summary
+                body += f"""
+🎯 Signal Summary:
+- Entry triggered by technical indicators
+- All required trend and momentum conditions met
+"""
+                # Format indicator values
+                ema = additional_info.get('ema', 'N/A')
+                vwma = additional_info.get('vwma', 'N/A')
+                roc = additional_info.get('roc', 'N/A')
+                roc_of_roc = additional_info.get('roc_of_roc', 'N/A')
+                macd_line = additional_info.get('macd_line', 'N/A')
+                macd_signal = additional_info.get('macd_signal', 'N/A')
+                stoch_k = additional_info.get('stoch_rsi_k', 'N/A')
+                stoch_d = additional_info.get('stoch_rsi_d', 'N/A')
+                
+                body += f"""
+📈 Technical Indicators at Entry:
+- Entry Time: {additional_info.get('entry_time', 'N/A')}
+- EMA: {ema}
+- VWMA: {vwma}
+- ROC: {roc}
+- ROC of ROC: {roc_of_roc}
+- MACD Line: {macd_line}
+- MACD Signal: {macd_signal}
+- Stochastic RSI K: {stoch_k}
+- Stochastic RSI D: {stoch_d}
+
+📋 Full Symbol: {full_symbol}
 """
             
 
+            
+            # Add footer
+            body += f"""
+
+---
+🤖 Automated Trading System
+📧 Generated at {timestamp}
+"""
             
             # Send email
             success = self.email_client.send_email(
