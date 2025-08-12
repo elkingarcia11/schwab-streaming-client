@@ -583,7 +583,36 @@ class SchwabStreamingClient:
             if signal_result.get('action') == 'enter_trade':
                 trade_details = signal_result.get('trade_details', {})
                 
-
+                # Get configured indicators for this symbol
+                underlying_symbol = symbol[:3].strip()
+                indicator_config = {}
+                if underlying_symbol in self.indicator_periods and '1m' in self.indicator_periods[underlying_symbol]:
+                    indicator_config = self.indicator_periods[underlying_symbol]['1m']
+                
+                # Build additional_info with dynamic indicator mapping
+                additional_info = {
+                    'full_symbol': symbol,
+                    'entry_time': trade_details.get('entry_timestamp', ''),
+                }
+                
+                # Add configured indicators from entry_indicators
+                entry_indicators = trade_details.get('entry_indicators', {})
+                
+                if self.debug:
+                    print(f"🔍 DEBUG: Entry indicators available: {list(entry_indicators.keys())}")
+                    print(f"🔍 DEBUG: Configured indicators: {list(indicator_config.keys())}")
+                
+                for indicator_name in indicator_config.keys():
+                    # Use exact column names from indicator_periods.json
+                    if indicator_name == 'macd_fast' or indicator_name == 'macd_slow':
+                        # Both macd_fast and macd_slow create the same macd_line column
+                        additional_info['macd_line'] = entry_indicators.get('entry_macd_line', 0)
+                    elif indicator_name == 'stoch_rsi_period':
+                        # Skip period config, we want the actual K/D values
+                        continue
+                    else:
+                        # Use the exact indicator name from indicator_periods.json
+                        additional_info[indicator_name] = entry_indicators.get(f'entry_{indicator_name}', 0)
                 
                 # Send email notification for trade entry
                 self.email_manager.send_trade_notification(
@@ -591,22 +620,50 @@ class SchwabStreamingClient:
                     symbol=symbol,
                     contract_type=option_data['contract_type'],
                     price=trade_details.get('entry_price', 0),
-                    additional_info={
-                        'full_symbol': symbol,
-                        'entry_time': trade_details.get('entry_timestamp', ''),
-                        'ema': trade_details.get('ema', 0),
-                        'vwma': trade_details.get('vwma', 0),
-                        'roc': trade_details.get('roc', 0),
-                        'roc_of_roc': trade_details.get('roc_of_roc', 0),
-                        'macd_line': trade_details.get('macd_line', 0),
-                        'macd_signal': trade_details.get('macd_signal', 0),
-                        'stoch_rsi_k': trade_details.get('stoch_rsi_k', 0), 
-                        'stoch_rsi_d': trade_details.get('stoch_rsi_d', 0),
-                    }
+                    additional_info=additional_info
                 )
                     
             elif signal_result.get('action') == 'exit_trade':
                 trade_details = signal_result.get('trade_details', {})
+                
+                # Get configured indicators for this symbol
+                underlying_symbol = symbol[:3].strip()
+                indicator_config = {}
+                if underlying_symbol in self.indicator_periods and '1m' in self.indicator_periods[underlying_symbol]:
+                    indicator_config = self.indicator_periods[underlying_symbol]['1m']
+                
+                # Build additional_info with dynamic indicator mapping
+                additional_info = {
+                    'full_symbol': symbol,
+                    'entry_price': trade_details.get('entry_price', 0),
+                    'profit': f"${trade_details.get('profit', 0):.4f}",
+                    'profit_pct': f"{trade_details.get('profit_pct', 0):.2f}%",
+                    'exit_reason': trade_details.get('exit_reason', 'unknown'),
+                    'duration': trade_details.get('duration_minutes', 0),
+                }
+                
+                # Add configured indicators from entry_indicators and exit_indicators
+                entry_indicators = trade_details.get('entry_indicators', {})
+                exit_indicators = trade_details.get('exit_indicators', {})
+                
+                if self.debug:
+                    print(f"🔍 DEBUG: Entry indicators available: {list(entry_indicators.keys())}")
+                    print(f"🔍 DEBUG: Exit indicators available: {list(exit_indicators.keys())}")
+                    print(f"🔍 DEBUG: Configured indicators: {list(indicator_config.keys())}")
+                
+                for indicator_name in indicator_config.keys():
+                    # Use exact column names from indicator_periods.json
+                    if indicator_name == 'macd_fast' or indicator_name == 'macd_slow':
+                        # Both macd_fast and macd_slow create the same macd_line column
+                        additional_info['entry_macd_line'] = entry_indicators.get('entry_macd_line', 0)
+                        additional_info['exit_macd_line'] = exit_indicators.get('exit_macd_line', 0)
+                    elif indicator_name == 'stoch_rsi_period':
+                        # Skip period config, we want the actual K/D values
+                        continue
+                    else:
+                        # Use the exact indicator name from indicator_periods.json with entry/exit prefix
+                        additional_info[f'entry_{indicator_name}'] = entry_indicators.get(f'entry_{indicator_name}', 0)
+                        additional_info[f'exit_{indicator_name}'] = exit_indicators.get(f'exit_{indicator_name}', 0)
                 
                 # Send email notification for trade exit               
                 self.email_manager.send_trade_notification(
@@ -614,22 +671,7 @@ class SchwabStreamingClient:
                     symbol=symbol,
                     contract_type=option_data['contract_type'],
                     price=trade_details.get('exit_price', 0),
-                    additional_info={
-                        'full_symbol': symbol,
-                        'entry_price': trade_details.get('entry_price', 0),
-                        'profit': f"${trade_details.get('profit', 0):.4f}",
-                        'profit_pct': f"{trade_details.get('profit_pct', 0):.2f}%",
-                        'exit_reason': trade_details.get('exit_reason', 'unknown'),
-                        'duration': trade_details.get('duration_minutes', 0),
-                        'ema': trade_details.get('ema', 0),
-                        'vwma': trade_details.get('vwma', 0),
-                        'roc': trade_details.get('roc', 0),
-                        'roc_of_roc': trade_details.get('roc_of_roc', 0),
-                        'macd_line': trade_details.get('macd_line', 0),
-                        'macd_signal': trade_details.get('macd_signal', 0),
-                        'stoch_rsi_k': trade_details.get('stoch_rsi_k', 0),
-                        'stoch_rsi_d': trade_details.get('stoch_rsi_d', 0),
-                    }
+                    additional_info=additional_info
                 )
                         
 
@@ -1262,7 +1304,7 @@ class SchwabStreamingClient:
                                 
                                 last_recorded_volume = self.last_recorded_volume[symbol][option_data['contract_type']]
                                 volume_increase = option_data.get('total_volume', 0) - last_recorded_volume
-                                volume_threshold_met = volume_increase >= 5
+                                volume_threshold_met = volume_increase >= 10
                                 
                                 if is_first_message or volume_threshold_met:
                                     # Volume threshold met → Record and save to CSV
@@ -1320,28 +1362,51 @@ class SchwabStreamingClient:
                                             
                                             # Send email notification for stop exit
                                             if self.email_manager:
+                                                # Get configured indicators for this symbol
+                                                underlying_symbol = symbol[:3].strip()
+                                                indicator_config = {}
+                                                if underlying_symbol in self.indicator_periods and '1m' in self.indicator_periods[underlying_symbol]:
+                                                    indicator_config = self.indicator_periods[underlying_symbol]['1m']
+                                                
+                                                # Build additional_info with dynamic indicator mapping
+                                                additional_info = {
+                                                    'full_symbol': symbol,
+                                                    'entry_price': completed_trade.get('entry_price', 0),
+                                                    'profit': f"${completed_trade.get('profit', 0):.4f}",
+                                                    'profit_pct': f"{completed_trade.get('profit_pct', 0):.2f}%",
+                                                    'exit_reason': exit_details.get('exit_reason', 'Stop Loss or Trailing Stop'),
+                                                    'duration': completed_trade.get('duration_minutes', 0),
+                                                }
+                                                
+                                                # Add configured indicators from entry_indicators and exit_indicators
+                                                entry_indicators = completed_trade.get('entry_indicators', {})
+                                                exit_indicators = completed_trade.get('exit_indicators', {})
+                                                
+                                                if self.debug:
+                                                    print(f"🔍 DEBUG: Stop loss - Entry indicators available: {list(entry_indicators.keys())}")
+                                                    print(f"🔍 DEBUG: Stop loss - Exit indicators available: {list(exit_indicators.keys())}")
+                                                    print(f"🔍 DEBUG: Stop loss - Configured indicators: {list(indicator_config.keys())}")
+                                                
+                                                for indicator_name in indicator_config.keys():
+                                                    # Use exact column names from indicator_periods.json
+                                                    if indicator_name == 'macd_fast' or indicator_name == 'macd_slow':
+                                                        # Both macd_fast and macd_slow create the same macd_line column
+                                                        additional_info['entry_macd_line'] = entry_indicators.get('entry_macd_line', 0)
+                                                        additional_info['exit_macd_line'] = exit_indicators.get('exit_macd_line', 0)
+                                                    elif indicator_name == 'stoch_rsi_period':
+                                                        # Skip period config, we want the actual K/D values
+                                                        continue
+                                                    else:
+                                                        # Use the exact indicator name from indicator_periods.json with entry/exit prefix
+                                                        additional_info[f'entry_{indicator_name}'] = entry_indicators.get(f'entry_{indicator_name}', 0)
+                                                        additional_info[f'exit_{indicator_name}'] = exit_indicators.get(f'exit_{indicator_name}', 0)
+                                                
                                                 self.email_manager.send_trade_notification(
                                                     action="SELL",
                                                     symbol=symbol,
                                                     contract_type=option_data['contract_type'],
                                                     price=completed_trade.get('exit_price', 0),
-                                                    additional_info={
-                                                        'full_symbol': symbol,
-                                                        'entry_price': completed_trade.get('entry_price', 0),
-                                                        'profit': f"${completed_trade.get('profit', 0):.4f}",
-                                                        'profit_pct': f"{completed_trade.get('profit_pct', 0):.2f}%",
-                                                        'exit_reason': exit_details.get('exit_reason', 'Stop Loss or Trailing Stop'),
-                                                        'duration': completed_trade.get('duration_minutes', 0),
-                                                        'entry_ema_fast': completed_trade.get('entry_ema_fast', 0),
-                                                        'entry_ema_slow': completed_trade.get('entry_ema_slow', 0),
-                                                        'entry_vwma': completed_trade.get('entry_vwma', 0),
-                                                        'entry_macd_line': completed_trade.get('entry_macd_line', 0),
-                                                        'entry_macd_signal': completed_trade.get('entry_macd_signal', 0),
-                                                        'entry_stoch_rsi_k': completed_trade.get('entry_stoch_rsi_k', 0),
-                                                        'entry_stoch_rsi_d': completed_trade.get('entry_stoch_rsi_d', 0),
-                                                        'entry_roc': completed_trade.get('entry_roc', 0),
-                                                        'entry_roc_of_roc': completed_trade.get('entry_roc_of_roc', 0),
-                                                    }
+                                                    additional_info=additional_info
                                                 )
 
                                     # Reset the mark_price_changed flag after processing

@@ -69,35 +69,32 @@ class SignalChecker:
             # Extract indicator values from entry data
             entry_indicators = trade_info.get('entry_indicators', {})
             
-            # Prepare trade data for CSV in exact column order (no full_symbol, clean format)
-            trade_data = [
-                trade_info.get('entry_timestamp', datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
-                trade_info.get('symbol', ''),
-                trade_info.get('contract_type', ''),
-                trade_info.get('strike_price', 0),
-                trade_info.get('entry_price', 0),
-                entry_indicators.get('entry_ema', 0),
-                entry_indicators.get('entry_ema_fast', 0),
-                entry_indicators.get('entry_ema_slow', 0),
-                entry_indicators.get('entry_vwma', 0),
-                entry_indicators.get('entry_macd_line', 0),
-                entry_indicators.get('entry_macd_signal', 0),
-                entry_indicators.get('entry_stoch_rsi_k', 0),
-                entry_indicators.get('entry_stoch_rsi_d', 0),
-                entry_indicators.get('entry_roc', 0),
-                entry_indicators.get('entry_roc_fast', 0),
-                entry_indicators.get('entry_roc_slow', 0),
-                entry_indicators.get('entry_roc_of_roc', 0)
-            ]
+            # Create base trade data
+            trade_data = {
+                'entry_timestamp': trade_info.get('entry_timestamp', datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                'symbol': trade_info.get('symbol', ''),
+                'contract_type': trade_info.get('contract_type', ''),
+                'strike_price': trade_info.get('strike_price', 0),
+                'entry_price': trade_info.get('entry_price', 0)
+            }
             
-            # Convert to DataFrame with explicit column order
-            df = pd.DataFrame([trade_data], columns=columns)
+            # Add all entry indicators dynamically
+            trade_data.update(entry_indicators)
+            
+            # Convert to DataFrame
+            df = pd.DataFrame([trade_data])
             
             # Write to CSV (append if exists, create with headers if not)
             if os.path.exists(csv_file):
                 df.to_csv(csv_file, mode='a', header=False, index=False)
             else:
                 df.to_csv(csv_file, mode='w', header=True, index=False)
+                
+            if self.debug:
+                print(f"📝 Logged trade open to {csv_file}")
+                
+        except Exception as e:
+            print(f"❌ Error logging trade open: {e}")
                 
 
         except Exception as e:
@@ -132,53 +129,60 @@ class SignalChecker:
             entry_indicators = completed_trade.get('entry_indicators', {})
             exit_indicators = completed_trade.get('exit_indicators', {})
             
-            # Prepare trade data for CSV in exact column order (no full_symbol, clean format)
-            trade_data = [
-                completed_trade.get('symbol', ''),
-                completed_trade.get('contract_type', ''),
-                completed_trade.get('strike_price', 0),
-                completed_trade.get('entry_price', 0),
-                completed_trade.get('exit_price', 0),
-                completed_trade.get('profit', 0),
-                completed_trade.get('profit_pct', 0),
-                duration_minutes,
-                completed_trade.get('exit_reason', ''),
-                completed_trade.get('max_unrealized_profit', 0),
-                completed_trade.get('max_drawdown', 0),
-                completed_trade.get('entry_timestamp', datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
-                completed_trade.get('exit_timestamp', datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
-                entry_indicators.get('entry_ema_fast', 0),
-                entry_indicators.get('entry_ema_slow', 0),
-                entry_indicators.get('entry_vwma', 0),
-                entry_indicators.get('entry_macd_line', 0),
-                entry_indicators.get('entry_macd_signal', 0),
-                entry_indicators.get('entry_stoch_rsi_k', 0),
-                entry_indicators.get('entry_stoch_rsi_d', 0),
-                entry_indicators.get('entry_roc', 0),
-                entry_indicators.get('entry_roc_fast', 0),
-                entry_indicators.get('entry_roc_slow', 0),
-                entry_indicators.get('entry_roc_of_roc', 0),
-                exit_indicators.get('exit_ema_fast', 0),
-                exit_indicators.get('exit_ema_slow', 0),
-                exit_indicators.get('exit_vwma', 0),
-                exit_indicators.get('exit_macd_line', 0),
-                exit_indicators.get('exit_macd_signal', 0),
-                exit_indicators.get('exit_stoch_rsi_k', 0),
-                exit_indicators.get('exit_stoch_rsi_d', 0),
-                exit_indicators.get('exit_roc', 0),
-                exit_indicators.get('exit_roc_fast', 0),
-                exit_indicators.get('exit_roc_slow', 0),
-                exit_indicators.get('exit_roc_of_roc', 0)
-            ]
+            # Create base trade data with timestamps first
+            trade_data = {
+                'entry_timestamp': completed_trade.get('entry_timestamp', datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                'exit_timestamp': completed_trade.get('exit_timestamp', datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                'symbol': completed_trade.get('symbol', ''),
+                'contract_type': completed_trade.get('contract_type', ''),
+                'strike_price': completed_trade.get('strike_price', 0),
+                'entry_price': completed_trade.get('entry_price', 0),
+                'exit_price': completed_trade.get('exit_price', 0),
+                'profit': completed_trade.get('profit', 0),
+                'profit_pct': completed_trade.get('profit_pct', 0),
+                'duration_minutes': duration_minutes,
+                'exit_reason': completed_trade.get('exit_reason', ''),
+                'max_unrealized_profit': completed_trade.get('max_unrealized_profit', 0),
+                'max_drawdown': completed_trade.get('max_drawdown', 0)
+            }
             
-            # Convert to DataFrame with explicit column order
-            df = pd.DataFrame([trade_data], columns=columns)
+            # Pair entry and exit indicators together
+            # Get all unique indicator names (without entry_/exit_ prefix)
+            all_indicators = set()
+            for key in entry_indicators.keys():
+                if key.startswith('entry_'):
+                    indicator_name = key[6:]  # Remove 'entry_' prefix
+                    all_indicators.add(indicator_name)
+            for key in exit_indicators.keys():
+                if key.startswith('exit_'):
+                    indicator_name = key[5:]  # Remove 'exit_' prefix
+                    all_indicators.add(indicator_name)
+            
+            # Add paired indicators to trade_data
+            for indicator_name in sorted(all_indicators):
+                entry_key = f'entry_{indicator_name}'
+                exit_key = f'exit_{indicator_name}'
+                
+                # Add entry indicator first, then exit indicator
+                if entry_key in entry_indicators:
+                    trade_data[entry_key] = entry_indicators[entry_key]
+                if exit_key in exit_indicators:
+                    trade_data[exit_key] = exit_indicators[exit_key]
+            
+            # Convert to DataFrame
+            df = pd.DataFrame([trade_data])
             
             # Write to CSV (append if exists, create with headers if not)
             if os.path.exists(csv_file):
                 df.to_csv(csv_file, mode='a', header=False, index=False)
             else:
                 df.to_csv(csv_file, mode='w', header=True, index=False)
+                
+            if self.debug:
+                print(f"📝 Logged trade close to {csv_file}")
+                
+        except Exception as e:
+            print(f"❌ Error logging trade close: {e}")
                 
 
         except Exception as e:
